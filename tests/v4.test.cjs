@@ -7,10 +7,14 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 const { start } = require('../scripts/serve.cjs');
 
-const PORT = 4190;
+const PORT = Number(process.env.V4_PORT || 4190);
 const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = path.join(__dirname, 'screenshots');
-const DESKTOP = { width: 1440, height: 900 };
+// V4_DESKTOP=1000x705 runs the desktop tests at another window size.
+const DESKTOP = (() => {
+  const m = /^(\d+)x(\d+)$/.exec(process.env.V4_DESKTOP || '');
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1440, height: 900 };
+})();
 const PHONE = { width: 390, height: 844 };
 
 let server;
@@ -627,8 +631,8 @@ describe('project', () => {
     await page.waitForTimeout(400);
     assert.deepEqual((await state(page)).active, ['aloud'], 'grace kept the preview');
 
-    // Leaving for good: back to the lineup after the 0.2 s grace.
-    await page.mouse.move(1300, 450);
+    // Leaving the list and the stage for good: back to the lineup after the 0.2 s grace.
+    await page.mouse.move(200, 150);
     await page.waitForTimeout(90);
     assert.deepEqual((await state(page)).active, ['aloud'], 'still within the grace');
     await page.waitForTimeout(700);
@@ -791,7 +795,7 @@ describe('project', () => {
     await page.screenshot({ path: path.join(SHOTS, 'case-collapsing.png') });
     await page.waitForTimeout(600);
     s = await caseState(page);
-    assert.deepEqual([s.rect.left, s.rect.top, Math.round(s.rect.width), Math.round(s.rect.height)], [0, 0, 1440, 900], 'the stage fills the window');
+    assert.deepEqual([s.rect.left, s.rect.top, Math.round(s.rect.width), Math.round(s.rect.height)], [0, 0, DESKTOP.width, DESKTOP.height], 'the stage fills the window');
     assert.equal(s.panel, 0);
     assert.equal(s.panelX, -90, 'the list slid 90 px left');
     assert.equal(s.nav, 0, 'the V4 nav steps aside for the pill');
@@ -1096,6 +1100,290 @@ describe('project', () => {
     assert.equal(new URL(page.url()).pathname, '/project');
     await close();
   });
+
+  // ---------- The lineup strips and the preview are live; clicks always open what was clicked ----------
+  const stripCenter = async (page, key) => {
+    const b = await page.locator(`.project-lineup_item[data-project="${key}"]`).boundingBox();
+    return [b.x + b.width / 2, b.y + b.height / 2];
+  };
+  const stageCenter = async (page) => {
+    const b = await page.locator('[data-project-stage]').boundingBox();
+    return [b.x + b.width * 0.45, b.y + b.height * 0.5];
+  };
+  // Nothing half-way: either the lineup or exactly one preview, nothing pinned, the list in place.
+  const consistent = (page) => page.evaluate(() => {
+    const op = (el) => Number(getComputedStyle(el).opacity);
+    const lineup = document.querySelector('[data-project-lineup]');
+    const previews = [...document.querySelectorAll('.project-preview_item')];
+    const visible = previews.filter((p) => getComputedStyle(p).visibility === 'visible' && op(p) > 0.01).map((p) => [p.dataset.project, op(p)]);
+    const panel = document.querySelector('.project-list_panel');
+    return {
+      lineup: op(lineup),
+      lineupHidden: lineup.classList.contains('is-hidden'),
+      visible,
+      active: previews.filter((p) => p.classList.contains('is-active')).map((p) => p.dataset.project),
+      pinned: !!document.querySelector('[data-project-stage]').style.position,
+      panel: op(panel),
+      panelX: new DOMMatrix(getComputedStyle(panel).transform).m41,
+      slot: !!document.querySelector('.v4-case_slot'),
+      open: !!document.querySelector('.v4-case'),
+      path: location.pathname,
+    };
+  });
+  const assertPreview = (c, key, msg) => {
+    assert.ok(c.lineupHidden && c.lineup < 0.01, `${msg}: lineup hidden (${c.lineup})`);
+    assert.deepEqual(c.visible, [[key, 1]], `${msg}: only ${key}'s preview, fully shown`);
+    assert.deepEqual(c.active, [key], msg);
+  };
+
+  test('hover a row, move onto its preview: the preview stays, and clicking it opens that project in place', async () => {
+    const { page, close } = await open('/project');
+    await page.mouse.move(...(await center(page, 2)));
+    await page.waitForTimeout(600);
+    // Right across the gap onto the preview, then up over it, slower than the 0.2 s grace.
+    const [sx, sy] = await stageCenter(page);
+    const [, ry] = await center(page, 2);
+    await page.mouse.move(sx, ry, { steps: 10 });
+    await page.mouse.move(sx, sy, { steps: 6 });
+    await page.waitForTimeout(700);
+    let c = await consistent(page);
+    assertPreview(c, 'rio-grande', 'the list and the stage are one hover zone');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.project-preview_item.is-active')).cursor), 'pointer');
+    await page.mouse.down();
+    await page.mouse.up();
+    await caseOpen(page, 'rio-grande');
+    assert.equal(new URL(page.url()).pathname, '/rio-grande-rv-resort');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.project-preview_item.is-active')).cursor), 'auto', 'no pointer once open');
+    // Clicking the open preview does nothing more.
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    assert.equal(new URL(page.url()).pathname, '/rio-grande-rv-resort');
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+    c = await consistent(page);
+    assertPreview(c, 'rio-grande', 'closing keeps the preview');
+    // Leaving the list and the stage returns the lineup.
+    await page.mouse.move(200, 120, { steps: 4 });
+    await page.waitForTimeout(800);
+    c = await consistent(page);
+    assert.ok(c.lineup > 0.99 && !c.lineupHidden, 'back on the lineup');
+    assert.deepEqual(c.visible, []);
+    await close();
+  });
+
+  test('lineup strips: hover previews that project like its row, the others dim; click and Enter open it', async () => {
+    const { page, close } = await open('/project');
+    const fetched = trackCaseFetches(page);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.project-lineup_item')).cursor), 'pointer');
+    await page.mouse.move(...(await stripCenter(page, 'nuform')));
+    await page.waitForTimeout(40);
+    const dim = await page.evaluate(() => ({
+      hovered: [...document.querySelectorAll('.project-lineup_item.is-hovered')].map((el) => el.dataset.project),
+      hasHover: document.querySelector('[data-project-lineup]').classList.contains('has-hover'),
+      active: [...document.querySelectorAll('.project-preview_item.is-active')].map((p) => p.dataset.project),
+    }));
+    assert.deepEqual(dim.hovered, ['nuform']);
+    assert.equal(dim.hasHover, true, 'the other strips dim');
+    assert.deepEqual(dim.active, [], 'not before the 80 ms hover intent');
+    await page.waitForTimeout(160);
+    const dimmed = await page.evaluate(() => [...document.querySelectorAll('.project-lineup_item')].map((el) => Number(getComputedStyle(el).opacity)));
+    assert.ok(dimmed[0] < 1 && dimmed[2] < 1 && dimmed[1] === 1, `dimming (${dimmed})`);
+    await page.waitForTimeout(500);
+    const c = await consistent(page);
+    assertPreview(c, 'nuform', 'hovering a strip previews it');
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.project-list_row.is-active')].map((r) => r.dataset.project)), ['nuform'], 'its row goes active');
+    assert.deepEqual(fetched, ['/nuform-v4'], 'and its page is fetched');
+    await close();
+
+    // Click a strip straight from the lineup.
+    const b = await open('/project');
+    await b.page.mouse.move(...(await stripCenter(b.page, 'rio-grande')));
+    await b.page.mouse.down();
+    await b.page.mouse.up();
+    await caseOpen(b.page, 'rio-grande');
+    assert.equal(new URL(b.page.url()).pathname, '/rio-grande-rv-resort');
+    await b.close();
+
+    // Keyboard: strips are focusable links; Enter opens.
+    const k = await open('/project');
+    const a11y = await k.page.evaluate(() => [...document.querySelectorAll('.project-lineup_item')].map((el) => [el.tabIndex, el.getAttribute('role'), el.getAttribute('aria-label')]));
+    assert.deepEqual(a11y[3], [0, 'link', 'Open A New Narrative']);
+    await k.page.focus('.project-lineup_item[data-project="aloud"]');
+    await k.page.keyboard.press('Enter');
+    await caseOpen(k.page, 'aloud');
+    assert.equal(new URL(k.page.url()).pathname, '/library-foundation-of-los-angeles');
+    await k.close();
+  });
+
+  test('a click opens exactly the clicked row: coming from the row above, during the leave-idle and return-to-idle fades', async () => {
+    const { page, close } = await open('/project', { viewport: { width: 1000, height: 705 } });
+    const fromAbove = async (j) => {
+      const [x, y] = await center(page, j);
+      const h = (await page.locator('.project-list_row').nth(j).boundingBox()).height;
+      await page.mouse.move(x, y - h, { steps: 2 }); // over the row above, briefly
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.up();
+    };
+    const keys = ['recto-verso', 'nuform', 'rio-grande', 'aloud'];
+    const paths = ['/project-t---recto-verso', '/nuform-v4', '/rio-grande-rv-resort', '/library-foundation-of-los-angeles'];
+    const toLineup = async () => {
+      await page.mouse.move(150, 80, { steps: 3 });
+      await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-project-lineup]')).opacity === '1', null, { timeout: 3000 });
+    };
+    for (const j of [1, 2, 3]) {
+      await fromAbove(j);
+      await caseOpen(page, keys[j]);
+      assert.equal(new URL(page.url()).pathname, paths[j], `row ${j} opened row ${j}`);
+      await page.keyboard.press('Escape');
+      await caseClosed(page);
+      await toLineup();
+    }
+
+    // During the leave-idle fade: the lineup is still fading out when the click lands on another row.
+    await page.mouse.move(...(await center(page, 0)));
+    await page.waitForTimeout(160); // the intent fired at 80 ms; the 0.38 s fade is running
+    const mid = await page.evaluate(() => Number(getComputedStyle(document.querySelector('[data-project-lineup]')).opacity));
+    assert.ok(mid > 0.05 && mid < 0.95, `mid-fade (${mid})`);
+    await page.mouse.move(...(await center(page, 2)));
+    await page.mouse.down();
+    await page.mouse.up();
+    let c = await consistent(page);
+    assertPreview(c, 'rio-grande', 'the click settles everything at once');
+    await caseOpen(page, 'rio-grande');
+    assert.equal(new URL(page.url()).pathname, '/rio-grande-rv-resort');
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+
+    // During the return-to-idle fade: a row click opens that row; a click on the fading preview opens it.
+    await page.mouse.move(150, 80, { steps: 3 });
+    await page.waitForTimeout(200 + 120);
+    const fading = await page.evaluate(() => Number(getComputedStyle(document.querySelector('[data-project-lineup]')).opacity));
+    assert.ok(fading > 0.05 && fading < 0.95, `returning (${fading})`);
+    await page.mouse.move(...(await center(page, 3)));
+    await page.mouse.down();
+    await page.mouse.up();
+    c = await consistent(page);
+    assertPreview(c, 'aloud', 'settled on the clicked row');
+    await caseOpen(page, 'aloud');
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+    await page.mouse.move(150, 80, { steps: 3 });
+    await page.waitForTimeout(200 + 100);
+    const [sx, sy] = await stageCenter(page);
+    await page.mouse.move(sx, sy);
+    await page.mouse.down();
+    await page.mouse.up();
+    await caseOpen(page, 'aloud');
+    assert.equal(new URL(page.url()).pathname, '/library-foundation-of-los-angeles', 'the preview that was fading out');
+    await close();
+  });
+
+  test('a wheel while the page loads is kept; resting on another row while it loads cancels it', async () => {
+    const { page, close } = await open('/project');
+    const slow = (re, ms) => page.route(re, async (route) => { await new Promise((r) => setTimeout(r, ms)); await route.continue(); });
+    await slow(/\/nuform-v4$/, 700);
+    await clickRow(page, 1);
+    await page.waitForTimeout(100);
+    for (let k = 0; k < 3; k++) { await page.mouse.wheel(0, 200); await page.waitForTimeout(30); } // still over the list
+    assert.equal(await page.evaluate(() => !!document.querySelector('.v4-case')), false, 'still loading');
+    await caseOpen(page, 'nuform');
+    await page.waitForTimeout(1300);
+    let s = await caseState(page);
+    assert.ok(s.top > 300, `the case opened scrolled (${s.top})`);
+    assert.equal(s.pos, 'fixed', 'so the list slid away');
+    assert.equal(s.panel, 0);
+    assert.equal(s.winY, 0);
+    // The wheel over where the list was keeps scrolling the case.
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+
+    // Hover is never dead while nothing is open: resting on another row cancels a slow open.
+    await slow(/\/rio-grande-rv-resort$/, 900);
+    await clickRow(page, 2);
+    await page.waitForTimeout(100);
+    await page.mouse.move(...(await center(page, 3)));
+    await page.waitForTimeout(300);
+    const c = await consistent(page);
+    assertPreview(c, 'aloud', 'the hovered row previews');
+    await page.waitForTimeout(1000);
+    s = await caseState(page);
+    assert.equal(s.path, '/project', 'the slow open was cancelled');
+    assert.equal(s.open, null);
+    assert.equal(await page.locator('.v4-case_progress').count(), 0);
+    // A quick pass over another row (under the 80 ms intent) does not cancel.
+    await clickRow(page, 1);
+    await page.mouse.move(...(await center(page, 0)));
+    await page.waitForTimeout(30);
+    await page.mouse.move(...(await center(page, 1)));
+    await caseOpen(page, 'nuform');
+    await close();
+  });
+
+  test('phone: tapping a strip previews it; tapping the preview (or the same strip) opens it', async () => {
+    const { page, close } = await open('/project', { viewport: PHONE, touch: true });
+    const tapAt = (x, y) => page.touchscreen.tap(x, y);
+    const [x, y] = await stripCenter(page, 'rio-grande');
+    await tapAt(x, y);
+    await page.waitForTimeout(700);
+    let c = await consistent(page);
+    assertPreview(c, 'rio-grande', 'first tap on a strip previews');
+    assert.equal(c.path, '/project');
+    await tapAt(x, y); // the same spot: now the preview
+    await caseOpen(page, 'rio-grande');
+    assert.equal(new URL(page.url()).pathname, '/rio-grande-rv-resort');
+    await page.goBack();
+    await caseClosed(page);
+    // A row tap previews; a tap on the preview opens.
+    const b = await page.locator('.project-list_row').nth(0).boundingBox();
+    await tapAt(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(700);
+    c = await consistent(page);
+    assertPreview(c, 'recto-verso', 'row tap previews');
+    const [sx, sy] = await stageCenter(page);
+    await tapAt(sx, sy);
+    await caseOpen(page, 'recto-verso');
+    assert.equal(new URL(page.url()).pathname, '/project-t---recto-verso');
+    await close();
+  });
+
+  test('race: quick clicks, Esc, Back and hovers never leave the page half-way or with hover dead', async () => {
+    const { page, close } = await open('/project', { viewport: { width: 1000, height: 705 } });
+    await page.route(/\/(nuform-v4|rio-grande-rv-resort)$/, async (route) => { await new Promise((r) => setTimeout(r, 250)); await route.continue(); });
+    let seed = 7;
+    const rnd = (n) => { seed = (seed * 16807) % 2147483647; return seed % n; };
+    for (let step = 0; step < 45; step++) {
+      const a = rnd(8);
+      if (a === 0) await page.mouse.move(...(await center(page, rnd(4))));
+      else if (a === 1) await clickRow(page, rnd(4));
+      else if (a === 2) { const [sx, sy] = await stageCenter(page); await page.mouse.move(sx, sy, { steps: 3 }); }
+      else if (a === 3) { const [sx, sy] = await stageCenter(page); await page.mouse.click(sx, sy); }
+      else if (a === 4) await page.keyboard.press('Escape');
+      else if (a === 5) { if (new URL(page.url()).pathname !== '/project') await page.goBack(); }
+      else if (a === 6) await page.mouse.move(150, 80, { steps: 2 });
+      else await page.mouse.wheel(0, 120);
+      await page.waitForTimeout([0, 40, 120, 300][rnd(4)]);
+    }
+    // Let everything finish, close whatever is open, then check the page is whole and hover works.
+    await page.waitForTimeout(1500);
+    if (await page.evaluate(() => !!document.querySelector('.v4-case'))) { await page.keyboard.press('Escape'); await caseClosed(page); }
+    await page.waitForTimeout(800);
+    let c = await consistent(page);
+    assert.equal(c.path, '/project');
+    assert.equal(c.pinned, false);
+    assert.equal(c.slot, false);
+    assert.equal(c.panel, 1);
+    assert.equal(c.panelX, 0);
+    assert.ok((c.lineup > 0.99 && c.visible.length === 0) || (c.lineup < 0.01 && c.visible.length === 1 && c.visible[0][1] === 1), `lineup or one preview, not both (${JSON.stringify(c)})`);
+    await page.mouse.move(...(await center(page, 1)));
+    await page.waitForTimeout(700);
+    c = await consistent(page);
+    assertPreview(c, 'nuform', 'hover still works');
+    await clickRow(page, 3);
+    await caseOpen(page, 'aloud');
+    await close();
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -1287,7 +1575,7 @@ describe('archive', () => {
     }));
     assert.equal(done.href, '/archives/designing-mcrointeractions');
     assert.ok(done.at - t0 > 780 && done.at - t0 < 1000, `about 0.85 s (${Math.round(done.at - t0)} ms)`);
-    assert.deepEqual([done.rect.left, done.rect.top, Math.round(done.rect.width), Math.round(done.rect.height)], [0, 0, 1440, 900], 'the cover fills the window');
+    assert.deepEqual([done.rect.left, done.rect.top, Math.round(done.rect.width), Math.round(done.rect.height)], [0, 0, DESKTOP.width, DESKTOP.height], 'the cover fills the window');
     assert.ok(done.panel < 0.01);
     assert.equal(done.ground, 'rgb(13, 51, 83)', "the row's cover colour (no data-ground set)");
     assert.equal(done.flip, 'expand');
@@ -1424,7 +1712,7 @@ describe('reduced motion', () => {
         resolve({ rect: [r.left, r.top, Math.round(r.width), Math.round(r.height)], panel: getComputedStyle(document.querySelector('.project-list_panel')).opacity, pill: getComputedStyle(document.querySelector('.v4-case_back')).opacity });
       }), { once: true });
     }));
-    assert.deepEqual(collapsed.rect, [0, 0, 1440, 900]);
+    assert.deepEqual(collapsed.rect, [0, 0, DESKTOP.width, DESKTOP.height]);
     assert.equal(collapsed.panel, '0');
     assert.equal(collapsed.pill, '1');
     await page.keyboard.press('Escape');

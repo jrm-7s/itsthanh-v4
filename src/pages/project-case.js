@@ -37,7 +37,12 @@ const samePage = (a, b) => {
   }
 };
 
-export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showPreview, currentIndex }) {
+const SLOW_MS = 10000;                 // a page that takes longer than this is simply loaded instead
+const SLOW = {};
+
+// settle(i, { animate }): the Project page shows row i's preview and nothing else (lineup hidden, timers and
+// fades cancelled). closed(i): a case was closed and the page is in charge again.
+export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed }) {
   const pageUrl = window.location.href;
   const pageTitle = document.title;
   let baseState = window.history.state; // the /project entry's own state (Barba's), restored when leaving
@@ -46,6 +51,9 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
   let pending = -1;   // whose case is loading
   let token = 0;      // bumped by every open/close, so late fetches do nothing
   let closing = false;
+  let closeJob = null; // the running close: { tween, finish }
+  let wheelBuf = 0;    // wheel distance collected while a case loads, applied once it opens
+  let wheelOn = false;
   let caseEl = null;
   let lenis = null;
   let tick = null;
@@ -164,7 +172,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
   function startLenis() {
     if (reduced() || lenis) return;
     lenis = new Lenis({
-      wrapper: stage, content: caseEl, eventsTarget: stage,
+      wrapper: stage, content: caseEl, eventsTarget: comp, // the wheel over the list scrolls the case too
       lerp: 0.1, smoothWheel: true, syncTouch: false, autoRaf: false, naiveDimensions: true,
     });
     tick = (t) => { if (lenis) lenis.raf(t * 1000); };
@@ -191,11 +199,31 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
     if (e.defaultPrevented || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
     if (!a || !caseEl || !caseEl.contains(a)) return;
+    if (closing) { e.preventDefault(); return; }
     const i = items.findIndex((it) => samePage(it.row.href, a.href));
     if (i < 0) return; // anything else: the router's usual handling
     e.preventDefault();
     open(i, 'replace');
   };
+
+  // ---------- A wheel while the page loads still counts ----------
+  const onPendingWheel = (e) => {
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? stage.clientHeight : 1;
+    wheelBuf = Math.max(0, wheelBuf + e.deltaY * unit);
+  };
+  function collectWheel(on) {
+    if (on === wheelOn) return;
+    wheelOn = on;
+    if (on) { wheelBuf = 0; comp.addEventListener('wheel', onPendingWheel, { passive: true }); }
+    else comp.removeEventListener('wheel', onPendingWheel);
+  }
+  function applyWheel() {
+    const y = Math.min(wheelBuf, Math.max(0, stage.scrollHeight - stage.clientHeight));
+    wheelBuf = 0;
+    if (y <= 0) return;
+    if (lenis) lenis.scrollTo(y);
+    else { stage.scrollTop = y; onScroll(); }
+  }
 
   // ---------- Loading bar across the top of the stage ----------
   function showProgress() {
@@ -327,24 +355,25 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
   // how: 'push' (first open), 'replace' (swap while open), 'none' (arrived here through history)
   async function open(i, how = 'push') {
     const it = items[i];
-    if (!it || closing || i === openIdx || !it.row.getAttribute('href')) return;
+    if (!it || !it.row.getAttribute('href')) return;
+    if (closing) finishClose(); // Esc then a quick click: finish closing at once, then open
+    if (i === openIdx || i === pending) return;
     const me = ++token;
     const swapping = openIdx >= 0;
     pending = i;
-    if (currentIndex() !== i) {
-      if (currentIndex() < 0) showNow(i);
-      else showPreview(i);
-    }
+    settle(i, { animate: swapping }); // the preview, fully shown, before anything else
     let data = cachedCase(it.row.href);
     if (data === undefined) {
       showProgress();
-      data = await loadCase(it.row.href);
+      collectWheel(true);
+      data = await Promise.race([loadCase(it.row.href), new Promise((r) => { setTimeout(() => r(SLOW), SLOW_MS); })]);
       if (me !== token) return;
       await finishProgress();
       if (me !== token) return;
     }
     pending = -1;
-    if (!data) { // the page couldn't be read: just go there
+    collectWheel(false);
+    if (!data || data === SLOW) { // the page couldn't be read in time: just go there
       const go = window.V4 && typeof window.V4.assign === 'function' ? window.V4.assign : (u) => window.location.assign(u);
       go(it.row.href);
       return;
@@ -361,34 +390,53 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
     lastIdx = i;
     if (swapping) swap(i, data);
     else mount(i, data);
+    applyWheel();
+  }
+
+  // A running close jumps to its end (another open, a hover or the lineup wants the page back).
+  function finishClose() {
+    if (!closeJob) return;
+    const job = closeJob;
+    if (job.tween) job.tween.kill();
+    job.finish();
   }
 
   function close({ instant = false } = {}) {
     token++;
     finishProgress(true);
+    collectWheel(false);
     pending = -1;
     if (openIdx < 0) return Promise.resolve();
+    const was = openIdx;
     openIdx = -1;
     document.title = pageTitle;
     if (instant || reduced()) {
       teardown();
+      closed(was);
       return Promise.resolve();
     }
     closing = true;
     return new Promise((resolve) => {
-      gsap.to(caseEl, {
+      const job = {};
+      job.finish = () => {
+        if (closeJob !== job) return;
+        closeJob = null;
+        closing = false;
+        teardown();
+        closed(was);
+        resolve();
+      };
+      job.tween = gsap.to(caseEl, {
         opacity: 0,
         duration: 0.25,
         ease,
         onComplete: () => {
+          job.tween = null;
           scrollTop(0);
-          setCollapsed(false).then(() => {
-            teardown();
-            closing = false;
-            resolve();
-          });
+          setCollapsed(false).then(job.finish);
         },
       });
+      closeJob = job;
     });
   }
 
@@ -436,6 +484,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
       lockScroll();
       return true;
     }
+    finishClose();
     close({ instant: true });
     return false;
   }
@@ -447,13 +496,25 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showP
     requestClose,
     popstate,
     navigating,
+    finishClose,
+    // Cancel a case that is still loading (the reader moved on to another row).
+    cancel: () => { if (openIdx < 0 && pending >= 0) close(); },
+    isOpen: () => openIdx >= 0,
+    isClosing: () => closing,
+    isPending: () => pending >= 0,
     isActive: () => openIdx >= 0 || pending >= 0,
     openIndex: () => openIdx,
+    pendingIndex: () => pending,
     destroy() {
       token++;
       finishProgress(true);
+      collectWheel(false);
+      if (closeJob && closeJob.tween) closeJob.tween.kill();
+      closeJob = null;
+      closing = false;
       pending = -1;
-      if (openIdx >= 0) { openIdx = -1; teardown(false); } // a Barba leave: the router owns the scroll lock now
+      // A Barba leave: the router owns the scroll lock now.
+      if (openIdx >= 0 || caseEl) { openIdx = -1; teardown(false); }
       document.removeEventListener('keydown', onKey);
       pill.remove();
     },

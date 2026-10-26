@@ -250,7 +250,9 @@ export default function project(container) {
   function returnToLineup(instant) {
     clearTimeout(intentTimer);
     clearTimeout(graceTimer);
+    if (viewer.isActive()) return; // never under an open or loading case
     if (state === 'lineup' && !instant) return;
+    lineupHover(-1); // the lineup comes back undimmed
     state = 'lineup';
     current = -1;
     mark(-1);
@@ -285,12 +287,32 @@ export default function project(container) {
   }
 
   // ---------- Input ----------
+  // The list and the stage are one hover zone: moving from a row onto its preview keeps the preview.
+  let overStage = false;
+  const inZone = () => overList || overStage;
+  const syncZone = () => {
+    overList = !!list && list.matches(':hover');
+    overStage = stage.matches(':hover');
+  };
+
   function hover(i, how) {
-    if (!alive || viewer.isActive()) return; // while a case is open, hovering rows doesn't switch previews
+    if (!alive || viewer.isOpen()) return; // while a case is open, hovering rows doesn't switch previews
+    if (viewer.isPending()) {
+      // A case is loading. Resting on another row (the hover intent) cancels it and previews that row.
+      if (how !== 'pointer' || i === viewer.pendingIndex()) return;
+      clearTimeout(intentTimer);
+      intentTimer = setTimeout(() => {
+        if (!alive || !viewer.isPending()) return;
+        viewer.cancel();
+        hover(i, 'now');
+      }, INTENT_MS);
+      return;
+    }
+    viewer.finishClose();
     clearTimeout(graceTimer);
     if (state === 'lineup') {
       clearTimeout(intentTimer);
-      if (how === 'pointer') intentTimer = setTimeout(() => { if (alive) leaveLineup(i); }, INTENT_MS);
+      if (how === 'pointer') intentTimer = setTimeout(() => { if (alive && !viewer.isActive()) leaveLineup(i); }, INTENT_MS);
       else leaveLineup(i);
     } else if (i !== current) {
       showPreview(i);
@@ -300,30 +322,51 @@ export default function project(container) {
     else prefetch(i);
   }
 
+  // Back to the lineup once the pointer has left the list and the stage. Not while a case is open, loading or
+  // closing: a closed case keeps its preview.
+  const holdPreview = () => viewer.isActive() || viewer.isClosing();
   function scheduleGrace() {
-    if (viewer.isActive()) return;
+    if (holdPreview()) return;
     clearTimeout(graceTimer);
     clearTimeout(intentTimer);
-    graceTimer = setTimeout(() => { if (alive && !overList) returnToLineup(false); }, GRACE_MS);
+    graceTimer = setTimeout(() => {
+      if (!alive || inZone() || holdPreview()) return;
+      viewer.finishClose();
+      returnToLineup(false);
+    }, GRACE_MS);
   }
 
-  // The preview for row i at once: no fade, no roll (a click can land before the hover intent).
-  function showNow(i) {
+  // Row i's preview and nothing else, at once: every timer and fade stops, the lineup is hidden. Called by
+  // the viewer before it opens anything. A swap between open cases keeps the slat flip and text roll.
+  function settle(i, { animate = false } = {}) {
     clearTimeout(intentTimer);
     clearTimeout(graceTimer);
-    state = 'browsing';
-    current = i;
-    mark(i);
+    clearTimeout(prefetchTimer);
+    if (animate && state === 'browsing' && current >= 0 && current !== i && !reduced()) {
+      showPreview(i);
+    } else {
+      state = 'browsing';
+      current = i;
+      mark(i);
+      killFades();
+      allPreviews().forEach((p) => gsap.set(p, { autoAlpha: p === items[i].preview ? 1 : 0 }));
+      alignSlats(i);
+      if (slatTarget !== i) slatsSet(i);
+      if (slatsBox) gsap.set(slatsBox, { autoAlpha: 1 });
+    }
     setLineupHidden(true);
-    killFades();
-    allPreviews().forEach((p) => gsap.set(p, { autoAlpha: p === items[i].preview ? 1 : 0 }));
-    if (lineup) gsap.set(lineup, { autoAlpha: 0 });
+    if (lineup) { gsap.killTweensOf(lineup); gsap.set(lineup, { autoAlpha: 0 }); }
+    lineupHover(-1);
+  }
+
+  // A case closed: its preview stays, and the page takes input again.
+  function closed(i) {
+    settle(i);
+    syncZone();
   }
 
   // Open in place; while a case is open, another row swaps to that project.
-  const viewer = caseViewer({
-    comp, stage, panel, items, slatsBox, showNow, showPreview, currentIndex: () => current,
-  });
+  const viewer = caseViewer({ comp, stage, panel, items, slatsBox, settle, closed });
 
   function open(i) {
     clearTimeout(intentTimer);
@@ -333,6 +376,14 @@ export default function project(container) {
   }
 
   const isTouchy = (type) => type === 'touch' || type === 'pen';
+
+  // Touch: the first tap previews, a second tap on the same project (row, strip or preview) opens it.
+  function press(i) {
+    const touch = isTouchy(lastPointer);
+    lastPointer = '';
+    if (touch && !(state === 'browsing' && current === i && !viewer.isActive())) { hover(i, 'tap'); return; }
+    open(i);
+  }
 
   items.forEach((it, i) => {
     offs.on(it.row, 'pointerdown', (e) => { lastPointer = e.pointerType; lastPressAt = performance.now(); });
@@ -345,11 +396,7 @@ export default function project(container) {
     offs.on(it.row, 'click', (e) => {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button > 0) return; // new tab etc.
       e.preventDefault();
-      const touch = isTouchy(lastPointer);
-      lastPointer = '';
-      // Touch: the first tap previews, a second tap on the same row opens it.
-      if (touch && !(state === 'browsing' && current === i)) { hover(i, 'tap'); return; }
-      open(i);
+      press(i); // always this row's own index
     });
   });
 
@@ -362,7 +409,7 @@ export default function project(container) {
     offs.on(list, 'pointerleave', (e) => {
       if (e.pointerType !== 'mouse') return;
       overList = false;
-      scheduleGrace();
+      if (!inZone()) scheduleGrace();
     });
     // Keyboard focus behaves like hover. Focus that comes with a press is left to the pointer logic, or a
     // tap would preview and open in one go.
@@ -372,9 +419,75 @@ export default function project(container) {
       if (i >= 0) hover(i, 'focus');
     });
     offs.on(list, 'focusout', (e) => {
-      if (!list.contains(e.relatedTarget) && !overList) scheduleGrace();
+      if (!list.contains(e.relatedTarget) && !inZone()) scheduleGrace();
     });
   }
+
+  // ---------- The stage: lineup strips and the preview are live too ----------
+  const strips = lineup ? [...lineup.querySelectorAll('.project-lineup_item')] : [];
+  const stripIndex = (el) => {
+    const k = el.getAttribute('data-project');
+    const i = k ? items.findIndex((it) => it.row.getAttribute('data-project') === k) : -1;
+    return i >= 0 ? i : strips.indexOf(el);
+  };
+  function lineupHover(i) {
+    if (!lineup) return;
+    lineup.classList.toggle('has-hover', i >= 0);
+    strips.forEach((el) => el.classList.toggle('is-hovered', i >= 0 && stripIndex(el) === i));
+  }
+  strips.forEach((el) => {
+    const i = stripIndex(el);
+    if (i < 0 || !items[i]) return;
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('role', 'link');
+    el.setAttribute('aria-label', `Open ${(items[i].row.querySelector('.project-list_name') || items[i].row).textContent.trim()}`);
+    offs.on(el, 'pointerenter', (e) => {
+      if (e.pointerType !== 'mouse') return;
+      lineupHover(i);
+      hover(i, 'pointer');
+    });
+    offs.on(el, 'pointerleave', (e) => {
+      if (e.pointerType !== 'mouse') return;
+      lineupHover(-1);
+      if (state === 'lineup') { clearTimeout(intentTimer); clearTimeout(prefetchTimer); }
+    });
+    offs.on(el, 'keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      lastPointer = '';
+      open(i);
+    });
+  });
+
+  offs.on(stage, 'pointerdown', (e) => { lastPointer = e.pointerType; });
+  offs.on(stage, 'pointerenter', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    overStage = true;
+    clearTimeout(graceTimer);
+  });
+  offs.on(stage, 'pointerleave', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    overStage = false;
+    if (!inZone()) scheduleGrace();
+  });
+  // A click on a strip opens that project; a click on the preview opens the one it shows (even while it
+  // fades back to the lineup). An open case handles its own clicks.
+  offs.on(stage, 'click', (e) => {
+    if (!alive || viewer.isOpen() || e.defaultPrevented) return;
+    if (e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const t = e.target && e.target.closest ? e.target : null;
+    if (!t || t.closest('a[href], button, input, select, textarea, .v4-case')) return;
+    if (viewer.isPending()) { e.preventDefault(); return; } // already opening
+    const pv = t.closest('.project-preview_item');
+    const strip = t.closest('.project-lineup_item');
+    let i = -1;
+    if (pv) i = items.findIndex((it) => it.preview === pv);
+    else if (strip) i = stripIndex(strip);
+    else if (state === 'browsing') i = current;
+    if (i < 0 || !items[i]) return;
+    e.preventDefault();
+    press(i);
+  });
 
   let ro = null;
   if (typeof ResizeObserver !== 'undefined') {
@@ -404,6 +517,7 @@ export default function project(container) {
     // otherwise close any case at once and start again on the lineup.
     restore() {
       overList = false;
+      overStage = false;
       if (viewer.restore()) return;
       returnToLineup(true);
     },

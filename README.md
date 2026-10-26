@@ -22,7 +22,10 @@ What it does:
   data, ticking on the minute. It handles the switch to PST on Nov 1, 2026.
 - **Home**: the preloader (fresh loads only) and the artwork grid with its synced flip wave.
 - **Project**: lineup, then hover previews with the slat flip and text roll, a 0.2 s grace before the lineup returns,
-  and a one-time fetch of each hovered project's page. On touch, the first tap previews and the second tap opens.
+  and a one-time fetch of each hovered project's page. The lineup strips and the showing preview are live too:
+  hovering a strip previews that project, and clicking a row, a strip or the preview opens it. The list and the
+  stage are one hover zone, so moving from a row onto its preview keeps it. On touch, the first tap (row or strip)
+  previews and a second tap on it or on the preview opens.
 - **Archive**: the camera-dial list (GSAP Observer + spring), blur by distance, cover color and ink, cover fade and a
   rolling counter.
 
@@ -50,12 +53,16 @@ Chosen by `data-v4-transition` on `.page-wrapper` (set it on each page in Webflo
   - Every `<script>` is removed, and so is any `<style>` that targets `html`, `body` or `:root`. Other style embeds,
     images (`srcset`, lazy), iframes and videos stay. Autoplay videos are started muted, and Webflow's Lottie module is
     re-initialised if the page exposes it.
-- **Open:** a click (desktop), a second tap (touch) or Enter on a row. Nothing navigates: the preview stays as the
+- **Open:** a click on a row, a lineup strip or the preview (desktop), a second tap (touch), or Enter on a row or
+  strip. Opening first settles the page: every hover timer and fade stops, the lineup is hidden and the clicked
+  project's preview is fully shown. Nothing navigates: the preview stays as the
   first screen, the stage (`[data-project-stage]`) becomes a vertical scroll container with `div.v4-case` (the body,
   then "Next project →") under it, and `history.pushState` sets the project's real URL; `document.title` comes from
-  the fetched page. If the page hasn't arrived yet, a 3 px bar runs across the top of the stage first. If it can't be
-  fetched, the browser simply goes to the page.
-- **Scroll:** the stage scrolls with its own Lenis instance (destroyed on close); the window's Lenis is paused. Past
+  the fetched page. If the page hasn't arrived yet, a 3 px bar runs across the top of the stage first; a wheel
+  meanwhile is applied once the case is in, and resting on another row (the 80 ms intent) cancels the open and
+  previews that row. If the page can't be fetched, or takes over 10 s, the browser simply goes to the page.
+- **Scroll:** the stage scrolls with its own Lenis instance (destroyed on close), driven by the wheel anywhere over
+  the list or the stage; the window's Lenis is paused. Past
   24 px of stage scroll the list panel slides away (−90 px and a fade, 0.65 s, cubic-bezier(.65,0,.2,1)), the stage
   widens to the whole window, the V4 nav and footer fade, and an "← All projects" pill appears top-left. Back at the
   top, everything returns.
@@ -217,7 +224,11 @@ The class names and attributes in `v4-contract.md`, exactly. These are the detai
   the opening of the case study at full width. Previews hide with opacity and visibility, never `display: none`. `.project-preview_slats` is an empty
   absolute layer; the script aligns it to the active preview's strip, so its exact position doesn't matter. Each
   `project-list_row` is an `<a>` to the project page with `data-project` and `data-index`. Webflow styles the states
-  `.project-list_row.is-active` (indent) and `.project-list_rule.is-active` (rule draws in). Each row's `href` is the
+  `.project-list_row.is-active` (indent) and `.project-list_rule.is-active` (rule draws in). Each lineup strip keeps
+  `data-project`; the script makes it focusable (`tabindex`, `role="link"`, `aria-label`) and toggles
+  `.project-lineup_list.has-hover` / `.project-lineup_item.is-hovered` (v4.css dims the other strips to 0.7). v4.css
+  also sets `pointer-events: none` on `.project-preview_list` (it covers the lineup) and back on each preview item.
+  Each row's `href` is the
   project's real page; its structure (above) is what gets injected, so class styles on those pages must be site-wide
   classes (Webflow's default), not page-level custom code.
 - **Archive**: `section_archive` paints `background: var(--_v4---archive-bg)`. The script tweens that variable (and the
