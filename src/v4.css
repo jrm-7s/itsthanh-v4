@@ -179,3 +179,13 @@ html.is-preloading body { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .archive_counter-reel { transition: none; }
 }
+
+/* Tablet (768-991px): 11 grid cells must fit the narrower panel. */
+@media (min-width: 768px) and (max-width: 991px) {
+  [data-home-grid] { --home-grid-cell-w: 5.2vw; }
+}
+
+/* Project at 991px and below: the nav sits on the pale ground, not over images, so keep the dark ink. */
+@media (max-width: 991px) {
+  .page-wrapper[data-namespace="project"][data-ink] { --_v4---ink: #2b2b2b; }
+}

@@ -26,6 +26,8 @@ export default function project(container) {
   const lineup = comp.querySelector('[data-project-lineup]');
   const slatsBox = comp.querySelector('[data-project-slats]');
   const previewEls = [...comp.querySelectorAll('.project-preview_item')];
+  // Webflow outputs loading="lazy" on images by default; these must be decoded before the first hover.
+  comp.querySelectorAll('img').forEach((img) => { if (img.loading === 'lazy') img.loading = 'eager'; });
   const byKey = new Map(previewEls.map((el) => [el.getAttribute('data-project'), el]));
   const offs = bag();
 

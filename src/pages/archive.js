@@ -28,6 +28,8 @@ export default function archive(container) {
   const N = rows.length;
   if (!wrap || !list || !N) return {};
   const covers = [...container.querySelectorAll('[data-archive="covers"] [data-slug]')];
+  // Webflow outputs loading="lazy" on images by default; every cover must be ready before the dial turns.
+  container.querySelectorAll('[data-archive="covers"] img').forEach((img) => { if (img.loading === 'lazy') img.loading = 'eager'; });
   const counter = container.querySelector('[data-archive="counter"]');
   const pageWrap = document.querySelector('[data-barba="wrapper"]') || document.querySelector('.page-wrapper');
   const offs = bag();
