@@ -61,24 +61,48 @@ async function flipDone(page, pathname) {
   }, [pathname, ns], { timeout: 10000 });
 }
 
-/** Records flip direction and the rotateY of each container on every frame. */
+/**
+ * Records, on every frame of a transition: the direction and variant attributes on the wrapper, and for each
+ * container its xPercent, rotateY, opacity, blur and scale, plus the veil's clip-path and whether a
+ * cross-document view transition is active (it must never be for a Barba swap).
+ */
 function recordFlips(page) {
   return page.evaluate(() => {
     window.__flips = [];
-    window.__rot = [];
+    window.__variants = [];
+    window.__frames = [];
     const w = document.querySelector('[data-barba="wrapper"]');
-    new MutationObserver(() => { const d = w.getAttribute('data-flip'); if (d) window.__flips.push(d); })
-      .observe(w, { attributes: true, attributeFilter: ['data-flip'] });
+    new MutationObserver(() => {
+      const d = w.getAttribute('data-flip');
+      if (d) window.__flips.push(d);
+      const v = w.getAttribute('data-flip-variant');
+      if (v) window.__variants.push(v);
+    }).observe(w, { attributes: true, attributeFilter: ['data-flip', 'data-flip-variant'] });
+    const num = (re, str) => { const m = re.exec(str || ''); return m ? Number(m[1]) : null; };
+    const vtSupported = CSS.supports('selector(:active-view-transition)');
     const tick = () => {
+      const veil = document.querySelector('.v4-veil');
+      const vt = vtSupported && document.documentElement.matches(':active-view-transition');
       document.querySelectorAll('[data-barba="container"]').forEach((c) => {
-        const m = /rotateY\((-?[\d.]+)deg\)/.exec(c.style.transform);
-        window.__rot.push([c.getAttribute('data-barba-namespace'), m ? Number(m[1]) : null, c.style.opacity]);
+        const t = c.style.transform;
+        window.__frames.push({
+          ns: c.getAttribute('data-barba-namespace'),
+          x: num(/translate\((-?[\d.]+)%/, t),
+          rot: num(/rotateY\((-?[\d.]+)deg\)/, t),
+          scale: num(/scale\(([\d.]+)/, t),
+          opacity: c.style.opacity === '' ? null : Number(c.style.opacity),
+          blur: num(/blur\(([\d.]+)px\)/, c.style.filter),
+          veil: veil && getComputedStyle(veil).display !== 'none' ? veil.style.clipPath : null,
+          vt,
+        });
       });
       requestAnimationFrame(tick);
     };
     tick();
   });
 }
+const frames = (page) => page.evaluate(() => ({ flips: window.__flips, variants: window.__variants, frames: window.__frames }));
+const resetFrames = (page) => page.evaluate(() => { window.__flips = []; window.__variants = []; window.__frames = []; });
 
 const navState = (page) => page.evaluate(() => ({
   title: document.title,
@@ -148,10 +172,11 @@ describe('home', () => {
       links: [...document.querySelectorAll('.nav_link')].map((a) => getComputedStyle(a).opacity),
       introOpacity: getComputedStyle(document.querySelector('.home-intro_text')).opacity,
       cellsVisible: [...document.querySelectorAll('.home-grid_item')].every((c) => getComputedStyle(c).opacity === '1'),
+      rem: parseFloat(getComputedStyle(document.documentElement).fontSize),
       t: performance.now(),
     }));
     assert.equal(done.display, 'none');
-    assert.ok(Math.abs(done.logoTop - 3.625 * (1440 / 97.5)) < 1.5, `wordmark lands in its nav spot (top ${done.logoTop})`);
+    assert.ok(Math.abs(done.logoTop - 3.625 * done.rem) < 1.5, `wordmark lands in its nav spot (top ${done.logoTop})`);
     assert.ok(!done.logoStyle, 'no inline transform left on the wordmark');
     assert.deepEqual(done.links, ['0.5', '0.5'], 'nav links back to their Webflow styles');
     assert.equal(done.introOpacity, '1');
@@ -280,65 +305,67 @@ describe('home', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-describe('page flip', () => {
-  test('Home → Project → Archive → Back → Back: direction, title, meta, w--current, top of page', async () => {
+describe('page transitions', () => {
+  test('default glide: Home → Project → Archive → Back → Back with direction, title, meta and w--current', async () => {
     const { page, close } = await open('/');
     await settled(page);
+    assert.equal(await page.evaluate(() => window.V4.transition()), 'glide', 'glide is the default');
     await recordFlips(page);
 
     await page.hover('.nav_link[href="/project"]'); // Barba prefetches on hover
     await page.click('.nav_link[href="/project"]');
-    await page.waitForFunction(() => window.__rot.some(([ns, deg]) => ns === 'home' && deg < -30 && deg > -70));
-    await page.screenshot({ path: path.join(SHOTS, 'flip-forward-mid.png') });
+    await page.waitForFunction(() => window.__frames.some((f) => f.ns === 'home' && f.opacity !== null && f.opacity < 0.7));
+    await page.screenshot({ path: path.join(SHOTS, 'transition-glide-mid.png') });
     await flipDone(page, '/project');
-    let r = await page.evaluate(() => ({ flips: window.__flips, rot: window.__rot }));
+    let r = await frames(page);
     assert.deepEqual(r.flips, ['forward']);
-    let homeRot = r.rot.filter(([ns, d]) => ns === 'home' && d !== null).map(([, d]) => d);
-    assert.ok(homeRot.length > 10, 'the old page turned');
-    assert.ok(Math.min(...homeRot) <= -90 && Math.max(...homeRot) <= 0, 'forward: the old page turns right to left (0 → −100°)');
-    assert.equal(r.rot.filter(([ns, d]) => ns === 'project' && d !== null).length, 0, 'forward: the new page waits underneath');
+    assert.deepEqual(r.variants, ['glide']);
+    const homeX = r.frames.filter((f) => f.ns === 'home' && f.x !== null).map((f) => f.x);
+    const projX = r.frames.filter((f) => f.ns === 'project' && f.x !== null).map((f) => f.x);
+    assert.ok(Math.min(...homeX) <= -2 && Math.max(...homeX) <= 0, 'forward: the old page drifts left (toward the exit)');
+    assert.ok(Math.max(...projX) >= 1.5 && Math.min(...projX) >= 0, 'forward: the new page settles in from the right');
+    assert.equal(r.frames.filter((f) => f.rot !== null).length, 0, 'no 3D');
+    assert.equal(r.frames.some((f) => f.vt), false, 'Barba swaps never start a cross-document view transition');
     let s = await navState(page);
     assert.equal(s.title, 'Projects | Thanh Quach');
     assert.match(s.description, /^Selected projects/);
     assert.deepEqual(s.current, ['/project']);
     assert.deepEqual(s.ariaCurrent, ['/project']);
-    assert.equal(s.ink, 'light', "the Project page's own data-ink");
     assert.equal(s.namespace, 'project');
     assert.equal(s.wfPage, 'fixture-project');
     assert.equal(s.scrollY, 0);
 
-    await page.evaluate(() => { window.__flips = []; window.__rot = []; });
+    await resetFrames(page);
     await page.click('.nav_link[href="/archive"]');
     await flipDone(page, '/archive');
-    r = await page.evaluate(() => ({ flips: window.__flips, rot: window.__rot }));
+    r = await frames(page);
     assert.deepEqual(r.flips, ['forward']);
-    assert.ok(r.rot.some(([ns, d]) => ns === 'project' && d !== null && d < -45));
     s = await navState(page);
     assert.equal(s.title, 'Archive | Thanh Quach');
     assert.deepEqual(s.current, ['/archive']);
     assert.equal(s.namespace, 'archive');
 
-    // Browser Back: Archive → Project turns left to right; the incoming page swings in on top.
-    await page.evaluate(() => { window.__flips = []; window.__rot = []; });
+    // Browser Back: Archive → Project is a back transition, mirrored.
+    await resetFrames(page);
     await page.goBack();
-    await page.waitForFunction(() => window.__rot.some(([ns, deg]) => ns === 'project' && deg !== null && deg < -30 && deg > -70));
-    await page.screenshot({ path: path.join(SHOTS, 'flip-back-mid.png') });
     await flipDone(page, '/project');
-    r = await page.evaluate(() => ({ flips: window.__flips, rot: window.__rot }));
+    r = await frames(page);
     assert.deepEqual(r.flips, ['back']);
-    const projRot = r.rot.filter(([ns, d]) => ns === 'project' && d !== null).map(([, d]) => d);
-    assert.ok(projRot[0] <= -90 && projRot[projRot.length - 1] > -15, 'back: the new page turns in from −100° to 0°');
-    assert.equal(r.rot.filter(([ns, d]) => ns === 'archive' && d !== null).length, 0, 'back: the old page stays underneath');
+    const archX = r.frames.filter((f) => f.ns === 'archive' && f.x !== null).map((f) => f.x);
+    projX.length = 0;
+    projX.push(...r.frames.filter((f) => f.ns === 'project' && f.x !== null).map((f) => f.x));
+    assert.ok(Math.max(...archX) >= 2, 'back: the old page drifts right');
+    assert.ok(Math.min(...projX) <= -1.5, 'back: the new page settles in from the left');
     s = await navState(page);
     assert.equal(s.title, 'Projects | Thanh Quach');
     assert.deepEqual(s.current, ['/project']);
     assert.equal(s.ink, 'light');
 
-    await page.evaluate(() => { window.__flips = []; });
+    await resetFrames(page);
     await page.goBack();
     await flipDone(page, '/');
     s = await navState(page);
-    assert.deepEqual(await page.evaluate(() => window.__flips), ['back']);
+    assert.deepEqual((await frames(page)).flips, ['back']);
     assert.match(s.title, /^Thanh Quach/);
     assert.deepEqual(s.current, ['/']);
     assert.equal(s.ink, 'dark');
@@ -347,41 +374,123 @@ describe('page flip', () => {
     await close();
   });
 
-  test('a link outside the three pages flips the page away, then loads normally', async () => {
-    const { page, close } = await open('/archive');
-    // Center "Cactus Lamp" (row 2), then click it again to open its entry page.
-    await page.click('.archive_item:nth-child(2) .archive_name');
-    await page.waitForFunction(() => document.querySelector('.archive_item:nth-child(2)').classList.contains('is-active'));
-    await page.waitForTimeout(500);
-    await page.click('.archive_item:nth-child(2) .archive_name');
-    await page.waitForFunction(() => document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip') === 'out');
-    await page.waitForURL(`${BASE}/archives/cactus-light`, { timeout: 5000 });
-    assert.equal(await page.textContent('#case-title'), 'cactus light');
+  // inset() → [top, bottom] in %, from the 1-4 value shorthand the browser serializes to.
+  const insetTB = (c) => {
+    const m = /inset\(([^)]*)\)/.exec(c);
+    if (!m) return null;
+    const v = m[1].trim().split(/\s+/).map(parseFloat);
+    return [v[0], v.length < 3 ? v[0] : v[2]];
+  };
+  // Each variant: ?t= selects it, forward then back, ends on the right page, no console errors.
+  const EVIDENCE = {
+    glide: (fr, from, to, dir) => {
+      const fx = fr.filter((f) => f.ns === from && f.x !== null).map((f) => f.x);
+      const tx = fr.filter((f) => f.ns === to && f.x !== null).map((f) => f.x);
+      assert.ok(fx.some((x) => x * dir <= -2), `${from} drifts toward the exit`);
+      assert.ok(tx.some((x) => x * dir >= 1.5), `${to} enters from the other side`);
+    },
+    veil: (fr, from, to, dir) => {
+      const clips = fr.map((f) => f.veil).filter(Boolean).map(insetTB).filter(Boolean);
+      assert.ok(clips.length > 5, 'the veil is drawn');
+      const [top, bottom] = dir > 0 ? [0, 1] : [1, 0];
+      assert.ok(clips.some((c) => c[top] > 5 && c[top] < 95 && c[bottom] === 0), dir > 0 ? 'it rises from the bottom' : 'it comes down from the top');
+      assert.ok(clips.some((c) => c[bottom] > 5 && c[bottom] < 95), dir > 0 ? 'then carries on up and off' : 'then carries on down and off');
+      assert.equal(fr.filter((f) => f.rot !== null).length, 0);
+    },
+    turn: (fr, from, to, dir) => {
+      const turning = dir > 0 ? from : to;
+      const rot = fr.filter((f) => f.ns === turning && f.rot !== null).map((f) => f.rot);
+      assert.ok(rot.length > 5, `${turning} turns`);
+      assert.ok(Math.min(...rot) >= -16.01 && Math.min(...rot) <= -10, `restrained: max ${Math.min(...rot)}°`);
+      assert.equal(fr.filter((f) => f.ns !== turning && f.rot !== null).length, 0, 'only one page turns');
+    },
+    dissolve: (fr) => {
+      const blur = fr.map((f) => f.blur).filter((b) => b !== null);
+      const scale = fr.map((f) => f.scale).filter((b) => b !== null);
+      assert.ok(Math.max(...blur) > 2 && Math.max(...blur) <= 4.01, `blur up to 4px (${Math.max(...blur)})`);
+      assert.ok(Math.min(...scale) >= 0.9849 && Math.min(...scale) < 0.995, `scale down to .985 (${Math.min(...scale)})`);
+      assert.equal(fr.filter((f) => f.rot !== null).length, 0);
+    },
+  };
+  for (const variant of Object.keys(EVIDENCE)) {
+    test(`${variant}: forward and back, right page, right direction, no console errors`, async () => {
+      const { page, close } = await open(`/project?t=${variant}`);
+      assert.equal(await page.getAttribute('.page-wrapper', 'data-v4-transition'), variant, '?t= sets the variant');
+      await recordFlips(page);
+      await page.click('.nav_link[href="/archive"]');
+      if (variant === 'veil') {
+        await page.waitForFunction(() => window.__frames.some((f) => f.veil === 'inset(0%)' || f.veil === 'inset(0% 0% 0% 0%)'));
+        await page.screenshot({ path: path.join(SHOTS, 'transition-veil-covered.png') });
+      } else if (variant !== 'glide') {
+        await page.waitForTimeout(220);
+        await page.screenshot({ path: path.join(SHOTS, `transition-${variant}-mid.png`) });
+      }
+      await flipDone(page, '/archive');
+      let r = await frames(page);
+      assert.deepEqual(r.flips, ['forward']);
+      assert.deepEqual(r.variants, [variant]);
+      EVIDENCE[variant](r.frames, 'project', 'archive', 1);
+      assert.equal(r.frames.some((f) => f.vt), false);
+      assert.equal(await page.getAttribute('.page-wrapper', 'data-v4-transition'), variant, 'the variant persists across Barba swaps');
+
+      await resetFrames(page);
+      await page.click('.nav_link[href="/project"]');
+      await flipDone(page, '/project');
+      r = await frames(page);
+      assert.deepEqual(r.flips, ['back']);
+      EVIDENCE[variant](r.frames, 'archive', 'project', -1);
+      const after = await page.evaluate(() => ({
+        style: document.querySelector('[data-barba="container"]').getAttribute('style'),
+        veil: document.querySelector('.v4-veil') ? getComputedStyle(document.querySelector('.v4-veil')).display : 'none',
+        title: document.title,
+      }));
+      assert.ok(!after.style, 'container clean');
+      assert.equal(after.veil, 'none', 'veil gone');
+      assert.equal(after.title, 'Projects | Thanh Quach');
+      await close();
+    });
+  }
+
+  test('data-v4-transition on the wrapper picks the variant; unknown names fall back to glide', async () => {
+    const { page, close } = await open('/project');
+    await page.evaluate(() => document.querySelector('.page-wrapper').setAttribute('data-v4-transition', 'dissolve'));
+    assert.equal(await page.evaluate(() => window.V4.transition()), 'dissolve');
+    await recordFlips(page);
+    await page.click('.nav_link[href="/archive"]');
+    await flipDone(page, '/archive');
+    assert.deepEqual((await frames(page)).variants, ['dissolve']);
+    await page.evaluate(() => document.querySelector('.page-wrapper').setAttribute('data-v4-transition', 'book'));
+    assert.equal(await page.evaluate(() => window.V4.transition()), 'glide');
     await close();
   });
 
-  test('Back from the cache (pageshow persisted) resets the page and turns it back in', async () => {
+  test('links outside the three pages leave with the transition, then load normally', async () => {
+    const { page, close } = await open('/project?t=veil');
+    await recordFlips(page);
+    await page.evaluate(() => window.V4.navigate('/archives/clock-for-alien'));
+    await page.waitForURL(`${BASE}/archives/clock-for-alien`, { timeout: 5000 });
+    assert.equal(await page.textContent('#case-title'), 'Clock for Alien');
+    await close();
+  });
+
+  test('Back from the cache (pageshow persisted) brings the page back in after a transition out', async () => {
     const { page, close } = await open('/project');
-    const row = await page.locator('.project-list_row').nth(1).boundingBox();
-    await page.mouse.move(row.x + row.width / 2, row.y + row.height / 2);
-    await page.waitForFunction(() => document.querySelector('.project-preview_item[data-project="nuform"]').classList.contains('is-active'));
-    // Simulate the state a flip-out leaves behind, then the back/forward cache restoring it.
-    await page.mouse.move(5, 5);
-    await page.evaluate(() => {
-      const c = document.querySelector('[data-barba="container"]');
-      c.style.transform = 'perspective(4000px) rotateY(-100deg)';
-      document.querySelector('[data-barba="wrapper"]').setAttribute('data-flip', 'out');
-      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
-    });
-    const mid = await page.evaluate(() => ({
+    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push(href); });
+    await page.evaluate(() => window.V4.navigate('/nuform'));
+    await page.waitForFunction(() => window.__assigned.length === 1);
+    const out = await page.evaluate(() => ({
       flip: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip'),
-      lineup: document.querySelector('[data-project-lineup]').classList.contains('is-hidden'),
-      active: document.querySelectorAll('.project-preview_item.is-active').length,
+      opacity: getComputedStyle(document.querySelector('[data-barba="container"]')).opacity,
+      href: new URL(window.__assigned[0]).pathname,
     }));
-    assert.equal(mid.flip, null);
-    assert.equal(mid.lineup, false, 'back on the lineup');
-    assert.equal(mid.active, 0);
+    assert.equal(out.flip, 'out');
+    assert.equal(out.opacity, '0', 'the page left (glide out)');
+    assert.equal(out.href, '/nuform');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    assert.equal(await page.getAttribute('[data-barba="wrapper"]', 'data-flip'), null);
     await page.waitForFunction(() => !document.querySelector('[data-barba="container"]').getAttribute('style'), null, { timeout: 3000 });
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('[data-barba="container"]')).opacity), '1');
+    assert.equal(await page.evaluate(() => window.V4.isBusy()), false);
     await close();
   });
 });
@@ -504,14 +613,87 @@ describe('project', () => {
     await close();
   });
 
-  test('click flips out to the project page', async () => {
+  test('click expands the preview to fill the window, fades to the case-study ground, then opens', async () => {
     const { page, close } = await open('/project');
+    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push([href, performance.now()]); });
     await page.mouse.move(...(await center(page, 3)));
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(600);
+    const stageBefore = await page.evaluate(() => document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON());
+    const t0 = await page.evaluate(() => performance.now());
     await page.mouse.down();
     await page.mouse.up();
-    await page.waitForFunction(() => document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip') === 'out');
-    await page.waitForURL(`${BASE}/library-foundation-of-los-angeles`, { timeout: 5000 });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(SHOTS, 'expand-project-mid.png') });
+    await page.waitForFunction(() => window.__assigned.length === 1, null, { timeout: 3000 });
+    const done = await page.evaluate(() => {
+      const st = document.querySelector('[data-project-stage]');
+      return {
+        assigned: window.__assigned[0],
+        flip: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip'),
+        variant: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip-variant'),
+        position: getComputedStyle(st).position,
+        rect: st.getBoundingClientRect().toJSON(),
+        panel: Number(getComputedStyle(document.querySelector('.project-list_panel')).opacity),
+        nav: Number(getComputedStyle(document.querySelector('.nav_component')).opacity),
+        ground: getComputedStyle(document.querySelector('.v4-ground')).backgroundColor,
+        groundOpacity: Number(getComputedStyle(document.querySelector('.v4-ground')).opacity),
+        container: document.querySelector('[data-barba="container"]').getAttribute('style'),
+        prefetched: [...document.head.querySelectorAll('link[rel="prefetch"]')].map((l) => new URL(l.href).pathname),
+      };
+    });
+    assert.equal(new URL(done.assigned[0]).pathname, '/library-foundation-of-los-angeles');
+    const ms = done.assigned[1] - t0;
+    assert.ok(ms > 780 && ms < 1000, `the expand takes about 0.85 s (${Math.round(ms)} ms)`);
+    assert.equal(done.flip, 'expand', 'not the page transition');
+    assert.equal(done.variant, null);
+    assert.ok(!done.container, 'the page container itself never moves');
+    assert.ok(stageBefore.left > 300, 'the stage started beside the list');
+    assert.equal(done.position, 'fixed');
+    assert.deepEqual([done.rect.left, done.rect.top, Math.round(done.rect.width), Math.round(done.rect.height)], [0, 0, 1440, 900], 'the stage fills the window');
+    assert.ok(done.panel < 0.01, 'the list slid away');
+    assert.ok(done.nav < 0.01, 'the V4 nav faded');
+    assert.equal(done.ground, 'rgb(247, 245, 240)', 'cream, the case-study ground');
+    assert.equal(done.groundOpacity, 1);
+    assert.ok(done.prefetched.includes('/library-foundation-of-los-angeles'), 'the page was prefetched');
+
+    // Back from the case study (back/forward cache): it collapses to the list, then the lineup returns.
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: path.join(SHOTS, 'expand-project-collapsing.png') });
+    await page.mouse.move(1300, 120);
+    await page.waitForFunction(() => {
+      const st = document.querySelector('[data-project-stage]');
+      return !st.style.position && !document.querySelector('[data-project-lineup]').classList.contains('is-hidden');
+    }, null, { timeout: 4000 });
+    await page.waitForTimeout(500);
+    const back = await page.evaluate(() => ({
+      stage: document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON(),
+      panel: getComputedStyle(document.querySelector('.project-list_panel')).opacity,
+      nav: getComputedStyle(document.querySelector('.nav_component')).opacity,
+      ground: getComputedStyle(document.querySelector('.v4-ground')).display,
+      lineup: getComputedStyle(document.querySelector('[data-project-lineup]')).opacity,
+      busy: window.V4.isBusy(),
+    }));
+    assert.ok(Math.abs(back.stage.left - stageBefore.left) < 1 && Math.abs(back.stage.width - stageBefore.width) < 1, 'the stage is back in its place');
+    assert.equal(back.panel, '1');
+    assert.equal(back.nav, '1');
+    assert.equal(back.ground, 'none');
+    assert.equal(back.lineup, '1', 'back on the lineup');
+    assert.equal(back.busy, false);
+    await close();
+  });
+
+  test('expand hands over to the case page (cross-document view transition when both opt in)', async () => {
+    const { page, close } = await open('/project');
+    await page.mouse.move(...(await center(page, 1)));
+    await page.waitForTimeout(500);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForURL(`${BASE}/nuform`, { timeout: 5000 });
+    await page.waitForTimeout(500);
+    assert.equal(await page.textContent('#case-title'), 'The Future of You');
+    assert.equal(await page.evaluate(() => window.__pageRevealVT), true, 'the browser crossfaded between documents');
+    await page.screenshot({ path: path.join(SHOTS, 'case-page.png') });
     await close();
   });
 
@@ -651,6 +833,8 @@ describe('archive', () => {
 
   test('wheel passes through to the page at either end on short screens', async () => {
     const { page, close } = await open('/archive', { viewport: { width: 1440, height: 480 } });
+    // The desktop root size keeps the layout within the window, so make the page taller than it.
+    await page.addStyleTag({ content: '.section_archive { min-height: 130vh; }' });
     await page.evaluate(() => window.addEventListener('wheel', (e) => { window.__lastWheelPrevented = e.defaultPrevented; }, { passive: true }));
     await overList(page);
     await page.mouse.wheel(0, -100); // already on the first row
@@ -701,6 +885,45 @@ describe('archive', () => {
     } else {
       await page.waitForURL(/\/archives\//, { timeout: 5000 });
     }
+    await close();
+  });
+
+  test('opening the centered row grows the cover to fill the window; Back collapses it', async () => {
+    const { page, close } = await open('/archive');
+    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push([href, performance.now()]); });
+    await page.click('.archive_item:nth-child(3) .archive_name');
+    await page.waitForTimeout(900);
+    const before = await page.evaluate(() => document.querySelector('[data-archive="covers"]').getBoundingClientRect().toJSON());
+    const t0 = await page.evaluate(() => performance.now());
+    await page.click('.archive_item:nth-child(3) .archive_name');
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: path.join(SHOTS, 'expand-archive-mid.png') });
+    await page.waitForFunction(() => window.__assigned.length === 1, null, { timeout: 3000 });
+    const done = await page.evaluate(() => ({
+      href: new URL(window.__assigned[0][0]).pathname,
+      at: window.__assigned[0][1],
+      rect: document.querySelector('[data-archive="covers"]').getBoundingClientRect().toJSON(),
+      panel: Number(getComputedStyle(document.querySelector('.archive_panel')).opacity),
+      ground: getComputedStyle(document.querySelector('.v4-ground')).backgroundColor,
+      flip: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip'),
+    }));
+    assert.equal(done.href, '/archives/designing-mcrointeractions');
+    assert.ok(done.at - t0 > 780 && done.at - t0 < 1000, `about 0.85 s (${Math.round(done.at - t0)} ms)`);
+    assert.deepEqual([done.rect.left, done.rect.top, Math.round(done.rect.width), Math.round(done.rect.height)], [0, 0, 1440, 900], 'the cover fills the window');
+    assert.ok(done.panel < 0.01);
+    assert.equal(done.ground, 'rgb(13, 51, 83)', "the row's cover colour (no data-ground set)");
+    assert.equal(done.flip, 'expand');
+
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await page.waitForFunction(() => !document.querySelector('[data-archive="covers"]').getAttribute('style'), null, { timeout: 3000 });
+    const after = await page.evaluate(() => document.querySelector('[data-archive="covers"]').getBoundingClientRect().toJSON());
+    assert.ok(Math.abs(after.left - before.left) < 1 && Math.abs(after.top - before.top) < 1 && Math.abs(after.width - before.width) < 1, 'the cover is back in its place');
+    // The dial works again.
+    const b = await page.locator('[data-archive="list"]').boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.wheel(0, 100);
+    await page.waitForTimeout(900);
+    assert.equal((await state(page)).i, 3);
     await close();
   });
 
@@ -761,16 +984,35 @@ describe('reduced motion', () => {
     await close();
   });
 
-  test('page flip is a 0.2 s crossfade', async () => {
-    const { page, close } = await open('/project', RM);
+  test('every variant becomes a 0.2 s crossfade', async () => {
+    const { page, close } = await open('/project?t=turn', RM);
     await recordFlips(page);
     const t0 = Date.now();
     await page.click('.nav_link[href="/archive"]');
     await flipDone(page, '/archive');
-    const r = await page.evaluate(() => window.__rot);
-    assert.equal(r.filter(([, d]) => d !== null).length, 0, 'no rotation');
-    assert.ok(r.some(([ns, , o]) => ns === 'project' && o !== '' && Number(o) < 1 && Number(o) > 0), 'the old page fades');
+    const r = await frames(page);
+    assert.equal(r.frames.filter((f) => f.rot !== null || f.x !== null || f.blur !== null).length, 0, 'no movement, no blur');
+    assert.ok(r.frames.some((f) => f.ns === 'project' && f.opacity !== null && f.opacity < 1 && f.opacity > 0), 'the old page fades');
     assert.ok(Date.now() - t0 < 2000);
+    await close();
+  });
+
+  test('the expand becomes a short fade to the ground', async () => {
+    const { page, close } = await open('/project', RM);
+    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push([href, performance.now()]); });
+    const b = await page.locator('.project-list_row').nth(0).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(300);
+    const t0 = await page.evaluate(() => performance.now());
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForFunction(() => window.__assigned.length === 1, null, { timeout: 3000 });
+    const r = await page.evaluate(() => ({ at: window.__assigned[0][1], position: getComputedStyle(document.querySelector('[data-project-stage]')).position, ground: getComputedStyle(document.querySelector('.v4-ground')).opacity }));
+    assert.ok(r.at - t0 < 450, `quick (${Math.round(r.at - t0)} ms)`);
+    assert.notEqual(r.position, 'fixed', 'nothing grows');
+    assert.equal(r.ground, '1');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.v4-ground')).display === 'none', null, { timeout: 2000 });
     await close();
   });
 
