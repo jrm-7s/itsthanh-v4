@@ -175,3 +175,13 @@ body { width: 100vw; height: 5vh; margin: 0; min-height: 100%; background-color:
   /* data-ink is one value per page; where a mobile layout needs the other ink, key it off data-namespace. */
   .page-wrapper[data-namespace="project"][data-ink] { --_v4---ink: #2b2b2b; }
 }
+
+/* ---- Desktop (992px and up): Webflow changes made on staging, Oct 26 ---- */
+@media (min-width: 992px) {
+  .archive_panel { width: calc(50.26% - 0.625rem); }
+  .archive_cover-wrapper { left: calc(75.13% - 20.4375rem); }
+  .archive_counter { left: auto; right: calc(49.74% + 2.9375rem); transform: none; }
+  .home-intro_component { top: calc(50% - 12rem); }
+  .project-list_component { grid-template-columns: 33.5% minmax(0, 1fr); }
+  .archive_item { font-family: "Avenir", "Avenir Next", "Helvetica Neue", Arial, sans-serif; }
+}

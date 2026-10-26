@@ -7,6 +7,7 @@
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
     "fixtures": "node scripts/make-fixtures.cjs",
+    "demo": "node scripts/make-demo.cjs",
     "images": "node scripts/make-fixture-images.cjs",
     "sri": "node scripts/sri.cjs",
     "serve": "node scripts/serve.cjs",
