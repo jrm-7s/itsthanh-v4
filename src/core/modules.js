@@ -1,3 +1,5 @@
+import { setGround, groundOf } from './ground.js';
+
 // Page module lifecycle. Barba never runs the incoming page's own scripts, so every page carries this one
 // bundle, and the module for the current namespace is started with init(container) and stopped with destroy().
 //
@@ -19,6 +21,7 @@ export function mount(container, info = {}) {
   const ns = container ? container.getAttribute('data-barba-namespace') : null;
   const wrapper = document.querySelector('[data-barba="wrapper"]');
   if (wrapper && ns) wrapper.setAttribute('data-namespace', ns);
+  if (container) setGround(groundOf(container)); // the edges (status bar, toolbars) match the page; Archive then follows its covers
   const factory = registry.get(ns);
   let inst = {};
   if (factory) {

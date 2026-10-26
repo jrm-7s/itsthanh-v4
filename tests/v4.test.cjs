@@ -15,7 +15,11 @@ const DESKTOP = (() => {
   const m = /^(\d+)x(\d+)$/.exec(process.env.V4_DESKTOP || '');
   return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1440, height: 900 };
 })();
-const PHONE = { width: 390, height: 844 };
+// V4_PHONE=390x664 runs the phone tests at another size.
+const PHONE = (() => {
+  const m = /^(\d+)x(\d+)$/.exec(process.env.V4_PHONE || '');
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 390, height: 844 };
+})();
 
 let server;
 let browser;
@@ -1671,10 +1675,11 @@ describe('hints', () => {
     await page.mouse.down();
     await page.mouse.up();
     await page.waitForSelector('.v4-case');
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
     h = await hintState(page, P);
-    assert.equal(h.target, '', 'hidden while a case is open');
-    assert.equal(h.hidden, true);
+    assert.equal(h.target, 'Scroll down to view', 'once a case is open');
+    assert.equal(h.text, 'Scroll down to view');
+    assert.equal(h.shown, true);
 
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.v4-case'), null, { timeout: 4000 });
@@ -1695,18 +1700,36 @@ describe('hints', () => {
     await close();
   });
 
-  test('Project on touch: "Tap a project to preview", then "Tap again to open", under the last row', async () => {
-    const { page, close } = await open('/project', { viewport: PHONE, touch: true });
+  test('Project on touch: "Tap a project to preview", then "Tap again to open", centered inside the panel', async () => {
+    const { page, close } = await open('/project', { viewport: { width: 390, height: 844 }, touch: true });
     await page.waitForTimeout(400);
     let h = await hintState(page, P);
     assert.equal(h.target, 'Tap a project to preview');
     const rule = await boxOf(page, '.project-list_item:last-child .project-list_row');
-    const list = await boxOf(page, '.project-list_list');
-    assert.ok(h.box[1] >= rule[3] && h.box[1] - rule[3] < 24, `just under the last row (${h.box[1]} vs ${rule[3]})`);
-    assert.ok(Math.abs(h.box[0] - list[0]) < 1, 'left-aligned with the list');
+    const panel = await boxOf(page, '.project-list_panel');
+    assert.ok(h.box[1] >= rule[3], `below the last row (${h.box[1]} vs ${rule[3]})`);
+    assert.ok(h.box[0] >= panel[0] && h.box[2] <= panel[2] && h.box[3] <= panel[3] - 4, `inside the white panel (${h.box} in ${panel})`);
+    assert.ok(Math.abs((h.box[0] + h.box[2]) / 2 - (panel[0] + panel[2]) / 2) < 1.5, 'centered in it');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.v4-hint--project')).textAlign), 'center');
     const footer = await boxOf(page, '.footer_clock');
     const nav = await boxOf(page, '.nav_component');
     assert.ok(h.box[3] < footer[1] && h.box[1] > nav[3], 'clear of the footer and the nav');
+
+    // A panel that reaches down to the footer: the hint sits 1rem above its bottom, clear of the clock line.
+    await page.evaluate(() => {
+      const p = document.querySelector('.project-list_panel');
+      p.style.paddingBottom = `${window.innerHeight}px`;
+      window.dispatchEvent(new Event('resize'));
+    });
+    await page.waitForTimeout(100);
+    const tall = await page.evaluate(() => {
+      const box = (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+      return { hint: box(document.querySelector('.v4-hint--project')), panel: box(document.querySelector('.project-list_panel')), clock: box(document.querySelector('.footer_clock')), rem: parseFloat(getComputedStyle(document.documentElement).fontSize) };
+    });
+    assert.ok(tall.hint[3] <= tall.clock[1] - 0.5 * tall.rem, `above the clock line (${tall.hint[3]} vs ${tall.clock[1]})`);
+    assert.ok(tall.hint[3] > tall.clock[1] - 2 * tall.rem, 'just above it');
+    assert.ok(Math.abs((tall.hint[0] + tall.hint[2]) / 2 - (tall.panel[0] + tall.panel[2]) / 2) < 1.5, 'centered');
+    await page.evaluate(() => { document.querySelector('.project-list_panel').style.paddingBottom = ''; window.dispatchEvent(new Event('resize')); });
     const b = await page.locator('.project-list_row').nth(2).boundingBox();
     await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
     await page.waitForTimeout(400);
@@ -1738,18 +1761,90 @@ describe('hints', () => {
     assert.equal((await hintState(page, A)).target, 'Scroll or drag to browse');
     await close();
 
-    const t = await open('/archive', { viewport: PHONE, touch: true });
-    await t.page.waitForTimeout(400);
-    h = await hintState(t.page, A);
-    assert.equal(h.target, 'Swipe to browse');
-    const cover = await boxOf(t.page, '[data-archive="covers"]');
-    const fclock = await boxOf(t.page, '.footer_clock');
-    assert.ok(h.box[1] > cover[3] && h.box[3] < fclock[1], `between the cover and the footer (${h.box} / ${cover[3]} / ${fclock[1]})`);
-    assert.ok(Math.abs((h.box[0] + h.box[2]) / 2 - PHONE.width / 2) < 1, 'centered');
-    await t.close();
+    for (const vp of [PHONE, { width: 390, height: 664 }, { width: 375, height: 560 }]) {
+      const t = await open('/archive', { viewport: vp, touch: true });
+      await t.page.waitForTimeout(400);
+      h = await hintState(t.page, A);
+      assert.equal(h.target, 'Swipe to browse');
+      assert.equal(h.shown, true);
+      const panel = await boxOf(t.page, '.archive_panel');
+      const rem = await t.page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+      assert.ok(h.box[0] >= panel[0] && h.box[2] <= panel[2] && h.box[1] >= panel[1], `inside the white panel at ${vp.width}x${vp.height}`);
+      assert.ok(Math.abs(panel[3] - h.box[3] - rem) < 2, `about 1rem above its bottom (${panel[3] - h.box[3]})`);
+      assert.ok(Math.abs((h.box[0] + h.box[2]) / 2 - (panel[0] + panel[2]) / 2) < 1.5, 'centered');
+      assert.equal(await t.page.evaluate(() => getComputedStyle(document.querySelector('.v4-hint--archive')).color), 'rgb(123, 116, 116)', 'quiet on the white panel');
+      await t.close();
+    }
   });
 
-  test('open case: "Scroll to read ↓" fades in after 0.5 s at the top, leaves on scroll or collapse, returns at the top', async () => {
+  test('Archive on short phones: the cover fits above the footer (also with safe-area insets)', async () => {
+    for (const [w, hgt] of [[402, 874], [390, 664], [375, 667], [375, 560]]) {
+      for (const inset of [null, { top: 47, bottom: 34 }]) {
+        const context = await browser.newContext({ viewport: { width: w, height: hgt }, hasTouch: true, isMobile: true });
+        const page = await context.newPage();
+        if (inset) await (await context.newCDPSession(page)).send('Emulation.setSafeAreaInsetsOverride', { insets: inset });
+        await page.goto(`${BASE}/archive`);
+        await page.waitForFunction(() => window.V4 && window.V4.ready);
+        await page.waitForTimeout(300);
+        const m = await page.evaluate(() => {
+          const box = (s) => { const r = document.querySelector(s).getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+          return { cover: box('[data-archive="covers"]'), panel: box('.archive_panel'), clock: box('.footer_clock'), hint: box('.v4-hint--archive'), rows: box('[data-archive="row"].is-active'), list: box('[data-archive="list"]'), rem: parseFloat(getComputedStyle(document.documentElement).fontSize) };
+        });
+        const tag = `${w}x${hgt}${inset ? ' with insets' : ''}`;
+        assert.ok(m.cover[3] <= m.clock[1] - 16, `${tag}: cover ends above the footer (${m.cover[3]} vs ${m.clock[1]})`);
+        assert.ok(m.cover[1] >= m.panel[3], `${tag}: cover below the panel`);
+        assert.ok(Math.abs((m.cover[2] - m.cover[0]) / (m.cover[3] - m.cover[1]) - 13.75 / 14.5) < 0.01, `${tag}: cover keeps its proportions`);
+        assert.ok(m.cover[3] - m.cover[1] <= 14.5 * m.rem + 0.5, `${tag}: never taller than 14.5rem`);
+        assert.ok(m.hint[3] <= m.panel[3] && m.hint[1] >= m.rows[3], `${tag}: hint inside the panel, below the centered row`);
+        const rowMid = (m.rows[1] + m.rows[3]) / 2;
+        const listMid = (m.list[1] + m.list[3]) / 2;
+        assert.ok(Math.abs(rowMid - listMid) < 1, `${tag}: the dial still centers`);
+        await context.close();
+      }
+    }
+  });
+
+  test('the page ground reaches the edges: html, body and theme-color follow the Archive colour and reset on leave', async () => {
+    const { page, close } = await open('/archive');
+    const ground = () => page.evaluate(() => ({
+      html: getComputedStyle(document.documentElement).backgroundColor,
+      body: getComputedStyle(document.body).backgroundColor,
+      theme: document.querySelector('meta[name="theme-color"]').getAttribute('content'),
+      section: document.querySelector('.section_archive') ? getComputedStyle(document.querySelector('.section_archive')).backgroundColor : null,
+    }));
+    const hex = (rgb) => `#${rgb.match(/\d+/g).slice(0, 3).map((n) => Number(n).toString(16).padStart(2, '0')).join('')}`;
+    let g = await ground();
+    assert.equal(g.html, g.section, 'html matches the Archive ground');
+    assert.equal(g.body, g.section);
+    assert.equal(g.theme, hex(g.section));
+    const first = g.section;
+    const b = await page.locator('[data-archive="list"]').boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.wheel(0, 100);
+    await page.waitForTimeout(250);
+    const target = await page.evaluate(() => document.querySelectorAll('[data-archive="row"]')[1].getAttribute('data-color'));
+    assert.equal((await ground()).theme, target.toLowerCase(), 'theme-color goes straight to the new colour');
+    await page.waitForTimeout(900);
+    g = await ground();
+    assert.notEqual(g.html, first);
+    assert.equal(g.html, g.section, 'html tweened along with the section');
+    assert.equal(hex(g.html), target.toLowerCase());
+    await page.click('.nav_link[href="/project"]');
+    await flipDone(page, '/project');
+    g = await ground();
+    assert.equal(g.html, 'rgb(247, 245, 240)', 'Project: the cream ground');
+    assert.equal(g.body, 'rgb(247, 245, 240)');
+    assert.equal(g.theme, '#f7f5f0');
+    await page.evaluate(() => window.V4.navigate('/'));
+    await flipDone(page, '/');
+    g = await ground();
+    const homeGround = await page.evaluate(() => getComputedStyle(document.querySelector('[data-barba="container"] section, [data-barba="container"] [class*="section_"]')).backgroundColor);
+    assert.equal(g.html, homeGround, 'Home: its own ground');
+    assert.equal(g.theme, hex(homeGround));
+    await close();
+  });
+
+  test('open case: the list hint says "Scroll down to view"; the centered cue is phones only', async () => {
     const { page, close } = await open('/project');
     const b = await page.locator('.project-list_row').nth(1).boundingBox();
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
@@ -1757,39 +1852,26 @@ describe('hints', () => {
     await page.mouse.down();
     await page.mouse.up();
     await page.waitForSelector('.v4-case');
-    await page.waitForTimeout(250);
-    assert.equal((await hintState(page, CUE)).target, '', 'not straight away');
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(1200);
     let c = await hintState(page, CUE);
-    assert.equal(c.target, 'Scroll to read ↓');
-    assert.equal(c.shown, true);
-    assert.equal(c.pointer, 'none');
-    const stage = await boxOf(page, '[data-project-stage]');
-    assert.ok(Math.abs((c.box[0] + c.box[2]) / 2 - (stage[0] + stage[2]) / 2) < 1.5, 'centered on the stage');
-    assert.ok(c.box[3] <= stage[3] && c.box[3] > stage[3] - 60, 'near the bottom of the stage');
-    const meta = await boxOf(page, '.project-preview_item.is-active .project-preview_meta');
-    const clear = c.box[3] <= meta[1] || c.box[1] >= meta[3] || c.box[2] <= meta[0] || c.box[0] >= meta[2];
-    assert.ok(clear, `clear of the Client / Sector / Duration row (${c.box} vs ${meta})`);
+    assert.equal(c.target, '', 'no centered cue on desktop');
+    let h = await hintState(page, P);
+    assert.equal(h.target, 'Scroll down to view');
+    assert.equal(h.shown, true);
 
     const scrollTo = (y) => page.evaluate((v) => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = v; st.dispatchEvent(new Event('scroll')); }, y);
-    await scrollTo(10);
-    await page.waitForTimeout(100);
-    assert.equal((await hintState(page, CUE)).target, 'Scroll to read ↓', 'a nudge under 24 px keeps it');
     await scrollTo(200);
-    await page.waitForTimeout(300);
-    c = await hintState(page, CUE);
-    assert.equal(c.target, '');
-    assert.equal(c.hidden, true, 'gone once it scrolls and the list collapses');
+    await page.waitForTimeout(900);
+    assert.equal((await hintState(page, CUE)).target, '', 'still no cue once the list collapses');
     await scrollTo(0);
     await page.waitForTimeout(1000);
-    c = await hintState(page, CUE);
-    assert.equal(c.target, 'Scroll to read ↓', 'back at the top');
-    assert.equal(c.shown, true);
-    const stage2 = await boxOf(page, '[data-project-stage]');
-    assert.ok(Math.abs((c.box[0] + c.box[2]) / 2 - (stage2[0] + stage2[2]) / 2) < 1.5, 'placed on the stage again');
+    h = await hintState(page, P);
+    assert.equal(h.target, 'Scroll down to view', 'the list comes back with the hint');
+    assert.equal(h.shown, true);
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(150);
-    assert.equal((await hintState(page, CUE)).target, '', 'gone as the case closes');
+    await page.waitForFunction(() => !document.querySelector('.v4-case'), null, { timeout: 4000 });
+    await page.waitForTimeout(400);
+    assert.notEqual((await hintState(page, P)).target, 'Scroll down to view', 'gone once the case closes');
     await close();
 
     // Phones: the case opens full screen; the cue sits 1.5rem above the bottom.
@@ -1801,7 +1883,7 @@ describe('hints', () => {
     await t.page.waitForSelector('.v4-case');
     await t.page.waitForTimeout(1200);
     c = await hintState(t.page, CUE);
-    assert.equal(c.target, 'Scroll to read ↓');
+    assert.equal(c.target, 'Scroll down to view');
     assert.ok(Math.abs((c.box[0] + c.box[2]) / 2 - PHONE.width / 2) < 1.5);
     assert.ok(PHONE.height - c.box[3] > 10 && PHONE.height - c.box[3] < 40, `about 1.5rem up (${PHONE.height - c.box[3]})`);
     await t.page.evaluate(() => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = 300; st.dispatchEvent(new Event('scroll')); });

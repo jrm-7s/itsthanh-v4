@@ -7,7 +7,8 @@ import { Observer } from 'gsap/Observer';
 import { reduced, isMobile, bag, bezier, clamp, luminance, pad } from '../core/env.js';
 import { navigate, exitWith } from '../core/router.js';
 import { expand, collapse } from '../core/expand.js';
-import { makeHint, copy, placeOnClock, placeCentered, footerTop, mqTouch } from '../core/hints.js';
+import { makeHint, copy, placeOnClock, placeCentered, placeInPanel, mqTouch } from '../core/hints.js';
+import { setGround } from '../core/ground.js';
 
 const K = 320;            // spring stiffness
 const C = 30;             // spring damping
@@ -46,17 +47,10 @@ export default function archive(container) {
     const go = copy(panel, 'open', 'Click to open', 'Tap to open');
     hint.set(r && r.querySelector('a[href]') && go ? `${idle} · ${go}` : idle);
   }
-  // Desktop: bottom-right of the panel, on the year column and the clock's baseline. Phones: centered between
-  // the cover and the footer.
+  // Desktop: bottom-right of the panel, on the year column and the clock's baseline. Phones: centered at the
+  // bottom inside the panel, over its fade.
   function placeHint() {
-    if (isMobile() && coversWrap) {
-      const host = section || container;
-      const cr = coversWrap.getBoundingClientRect();
-      if (hint.el.parentNode !== host) host.append(hint.el);
-      const h = hint.el.offsetHeight || 12;
-      placeCentered(hint.el, host, cr.left + cr.width / 2, (cr.bottom + footerTop()) / 2 - h / 2);
-      return;
-    }
+    if (isMobile() && panel) { placeInPanel(hint.el, panel); return; }
     const year = rows[0].querySelector('.archive_year') || rows[0];
     if (!placeOnClock(hint.el, panel, year) && panel) {
       const pr = panel.getBoundingClientRect();
@@ -146,6 +140,7 @@ export default function archive(container) {
     BG_VARS.forEach((v) => { vars[v] = color; });
     if (instant) gsap.set(section, vars);
     else gsap.to(section, { ...vars, duration: 0.7, ease: colorEase, overwrite: true });
+    setGround(color, instant ? 0 : 0.7, colorEase); // the screen edges follow
   }
 
   let coverShown = null;

@@ -19,7 +19,7 @@ import { lockScroll, unlockScroll } from '../core/scroll.js';
 import { normPath } from '../core/router.js';
 import { loadCase, cachedCase } from '../core/casefetch.js';
 import { backdropOf } from '../core/expand.js';
-import { makeHint, copy } from '../core/hints.js';
+import { makeHint, copy, safeBottom } from '../core/hints.js';
 
 const COLLAPSE_AT = 24;                 // px of stage scroll before the list slides away
 const SLIDE = 0.65;                     // list away / stage widens
@@ -83,7 +83,8 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
   gsap.set(pill, { autoAlpha: 0 });
   pill.addEventListener('click', () => requestClose());
 
-  // "Scroll to read ↓" at the bottom of the stage, while an open case sits at its top.
+  // Phones only: "Scroll down to view" at the bottom of the full-screen case while it sits at its top. On wider
+  // screens the hint under the project list says it instead (see project.js).
   const cue = makeHint('v4-case_cue');
   comp.append(cue.el);
   let cueArmed = false;
@@ -95,7 +96,9 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
     const h = el.offsetHeight || 12;
     const cx = r.left + r.width / 2;
     const pad = 8;
-    let off = 1.5 * rootRem();
+    // Phones: clear of the browser's bottom bar (the safe area plus a little extra).
+    const floor = isMobile() ? safeBottom() + 0.5 * rootRem() : 0;
+    let off = floor + 1.5 * rootRem();
     // Keep clear of the preview's Client / Sector / Duration row: below it if there's room, else above it.
     const meta = stage.querySelector('.project-preview_item.is-active .project-preview_meta');
     const m = meta && meta.getBoundingClientRect();
@@ -104,22 +107,21 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
       const hitX = cx + w / 2 + pad > m.left && cx - w / 2 - pad < m.right;
       const hitY = y1 + pad > m.top && y1 - h - pad < m.bottom;
       if (hitX && hitY) {
-        const below = r.bottom - m.bottom;
-        off = below >= h + 2 * pad ? Math.max(pad, (below - h) / 2) : r.bottom - m.top + 12;
+        const below = r.bottom - floor - m.bottom;
+        off = below >= h + 2 * pad ? floor + Math.max(pad, (below - h) / 2) : r.bottom - m.top + 12;
       }
     }
-    const bottom = Math.round(window.innerHeight - r.bottom + off);
     el.style.left = `${Math.round(cx)}px`;
-    el.style.bottom = isMobile() ? `calc(${bottom}px + env(safe-area-inset-bottom, 0px))` : `${bottom}px`;
+    el.style.bottom = `${Math.round(window.innerHeight - r.bottom + off)}px`;
   }
   function updateCue() {
-    const show = openIdx >= 0 && !closing && cueArmed && !tl && stage.scrollTop < COLLAPSE_AT && (isMobile() || !collapsed);
+    const show = openIdx >= 0 && !closing && cueArmed && !tl && stage.scrollTop < COLLAPSE_AT && isMobile();
     if (show) {
-      const text = copy(panel, 'scroll', 'Scroll to read ↓');
+      const text = copy(panel, 'scroll', 'Scroll down to view');
       if (cue.text() !== text) cue.el.querySelector('.v4-hint_text').textContent = text; // measure the real copy
       placeCue();
     }
-    cue.set(show ? copy(panel, 'scroll', 'Scroll to read ↓') : '');
+    cue.set(show ? copy(panel, 'scroll', 'Scroll down to view') : '');
   }
   function armCue() {
     cueArmed = false;

@@ -5,7 +5,7 @@ import { gsap } from 'gsap';
 import { reduced, isMobile, bag, bezier } from '../core/env.js';
 import { loadCase } from '../core/casefetch.js';
 import { caseViewer } from './project-case.js';
-import { makeHint, copy, placeOnClock, placeInFlow, mqTouch } from '../core/hints.js';
+import { makeHint, copy, placeOnClock, placeInFlow, placeInPanel, mqTouch } from '../core/hints.js';
 
 const SLATS = 6;
 const SLAT_MS = 560;       // each slat turns in 0.56 s…
@@ -373,18 +373,29 @@ export default function project(container) {
 
   // ---------- Hint under the list: what to do next ----------
   // Desktop: bottom-right of the panel, on the year column and the clock's baseline. Phones and stacked
-  // tablets: just under the last row. Hidden while a case is open, loading or closing.
+  // tablets: just under the last row. Once a case is open it says "Scroll down to view" (it leaves with the
+  // list when the case widens); hidden while a case is loading or closing.
   const hint = makeHint('v4-hint--project');
   hintReady = true;
   function placeHint() {
     const lastRow = rows[rows.length - 1];
     const year = lastRow && (lastRow.querySelector('.project-list_year') || lastRow);
     const after = list && list !== panel ? list : lastRow;
-    if (isMobile() || !placeOnClock(hint.el, panel, year)) placeInFlow(hint.el, after);
+    if (isMobile()) {
+      // Phones: centered at the bottom inside the white panel, above the footer row; if the panel hugs the
+      // rows, just under them (still centered).
+      if (!placeInPanel(hint.el, panel, lastRow)) placeInFlow(hint.el, after);
+      return;
+    }
+    if (!placeOnClock(hint.el, panel, year)) placeInFlow(hint.el, after);
   }
   function syncHint() {
     if (!hintReady || !alive) return;
-    if (viewer.isActive() || viewer.isClosing()) { hint.set(''); return; }
+    if (viewer.isClosing()) { hint.set(''); return; }
+    if (viewer.isActive()) {
+      hint.set(viewer.openIndex() >= 0 ? copy(panel, 'scroll', 'Scroll down to view') : '');
+      return;
+    }
     hint.set(state === 'lineup'
       ? copy(panel, 'idle', 'Hover a project to preview', 'Tap a project to preview')
       : copy(panel, 'open', 'Click to open', 'Tap again to open'));

@@ -1,11 +1,11 @@
-// Small hint labels ("Hover a project to preview", "Scroll or drag to browse", "Scroll to read ↓").
+// Small hint labels ("Hover a project to preview", "Scroll or drag to browse", "Scroll down to view").
 // Script-built and styled in v4.css (.v4-hint), so Webflow needs no markup. Copy can be overridden with
 // data-hint-* attributes on the page's panel. Hints are aria-hidden (they only describe pointer gestures; the
 // rows are real links) and never take pointer events. A copy change is a quick fade (0.12 s out, 0.15 s in);
 // under reduced motion it swaps at once.
 
 import { gsap } from 'gsap';
-import { reduced } from './env.js';
+import { reduced, rootRem } from './env.js';
 
 export const mqTouch = matchMedia('(hover: none)');
 export const isTouch = () => mqTouch.matches;
@@ -136,6 +136,37 @@ export function placeCentered(el, host, cx, top) {
   const box = containingBox(el);
   el.style.left = `${Math.round(cx - box.left)}px`;
   el.style.top = `${Math.round(top - box.top)}px`;
+}
+
+/**
+ * Phones: centered at the bottom inside `panel`, about 1rem above its bottom edge, and above the footer row if
+ * that reaches into the panel. With `above` (the last list row), returns false instead of overlapping it.
+ */
+export function placeInPanel(el, panel, above) {
+  if (!panel) return false;
+  if (el.parentNode !== panel) panel.append(el);
+  el.style.position = 'absolute';
+  const pr = panel.getBoundingClientRect();
+  const rem = rootRem();
+  const h = el.offsetHeight || 12;
+  let bottom = pr.bottom - rem;
+  const clock = clockEl();
+  const cr = clock && clock.getBoundingClientRect();
+  if (cr && cr.height && cr.top < bottom + 0.5 * rem && cr.bottom > pr.top) bottom = Math.min(bottom, cr.top - 0.75 * rem);
+  const top = bottom - h;
+  if (above && top < above.getBoundingClientRect().bottom + 0.375 * rem) return false;
+  placeCentered(el, panel, pr.left + pr.width / 2, top);
+  return true;
+}
+
+/** env(safe-area-inset-bottom) in px. */
+export function safeBottom() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;left:0;bottom:0;width:0;height:0;visibility:hidden;pointer-events:none;padding-bottom:env(safe-area-inset-bottom, 0px)';
+  document.body.append(probe);
+  const v = parseFloat(getComputedStyle(probe).paddingBottom) || 0;
+  probe.remove();
+  return v;
 }
 
 export const footerTop = () => {

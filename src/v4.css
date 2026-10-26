@@ -87,9 +87,28 @@ html body { width: auto; height: auto; }
 .v4-case_cue { position: fixed; z-index: 96; transform: translateX(-50%); text-align: center; }
 @media (max-width: 767px) {
   .v4-hint { font-size: 0.675rem; }
-  .v4-hint.is-flow { margin-top: 0.75rem; margin-bottom: 0.25rem; text-align: left; }
-  /* Over a dark cover the phone footer turns light; so does the hint beside it. */
-  .page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .v4-hint { color: var(--_v4---ink); }
+  .v4-hint.is-flow { margin-top: 0.75rem; margin-bottom: 0.25rem; text-align: center; }
+}
+
+/* ---------- Archive on phones: the cover fits between the panel and the footer ----------
+   Staging's phone layout: the panel is flush with the top (24.875rem tall) and the cover sits 1.5rem below it
+   (13.75 × 14.5rem). On short screens the panel gives way to 55svh and the cover shrinks (same proportions)
+   so it ends about 4rem above the bottom (plus the bottom safe area), clear of the footer. */
+@media (max-width: 767px) {
+  .section_archive {
+    --v4-archive-panel: min(24.875rem, 55vh);
+    --v4-archive-panel: min(24.875rem, 55svh);
+    --v4-archive-cover-top: calc(var(--v4-archive-panel) + 1.5rem);
+    --v4-archive-cover-h: min(14.5rem, calc(100vh - var(--v4-archive-cover-top) - 4rem - env(safe-area-inset-bottom, 0px)));
+    --v4-archive-cover-h: min(14.5rem, calc(100svh - var(--v4-archive-cover-top) - 4rem - env(safe-area-inset-bottom, 0px)));
+  }
+  .section_archive .archive_panel { height: var(--v4-archive-panel); }
+  .section_archive .archive_cover-wrapper {
+    top: var(--v4-archive-cover-top);
+    bottom: auto;
+    height: var(--v4-archive-cover-h);
+    width: calc(var(--v4-archive-cover-h) * 13.75 / 14.5);
+  }
 }
 
 /* ---------- Project: the lineup strips and the preview open their project ---------- */

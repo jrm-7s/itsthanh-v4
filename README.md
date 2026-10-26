@@ -89,18 +89,31 @@ Small labels set like the footer clock (Pitchsans, uppercase, its colour), built
 v4.css (`.v4-hint`). They are `aria-hidden` and never take pointer events; a copy change is a quick fade (instant
 under reduced motion).
 
-- **Project:** "Hover a project to preview" on the lineup, "Click to open" while a preview shows, hidden while a
-  case is open (touch: "Tap a project to preview", "Tap again to open"). Desktop: bottom-right of the list panel,
-  on the year column and the clock's baseline. Phones and stacked tablets: just under the last row.
+- **Project:** "Hover a project to preview" on the lineup, "Click to open" while a preview shows (touch: "Tap a
+  project to preview", "Tap again to open"). Desktop: bottom-right of the list panel, on the year column and the
+  clock's baseline. Stacked tablets: just under the last row.
 - **Archive:** "Scroll or drag to browse · Click to open", or just the first half when the centered row has no page
-  (touch: "Swipe to browse · Tap to open"). Desktop: as on the Project page; phones: centered between the cover
-  and the footer.
-- **Open case:** "Scroll to read ↓", centered 1.5rem above the bottom of the stage (plus the safe area on phones),
-  0.5 s after the case opens and while it sits at the top. It moves below or above the preview's Client / Sector /
-  Duration row if it would touch it.
+  (touch: "Swipe to browse · Tap to open"). Desktop: as on the Project page.
+- **Phones:** every hint sits centered at the bottom inside the white panel, about 1rem above its bottom edge (over
+  the Archive's fade), and above the footer row where that reaches into the panel. If the Project panel hugs its
+  rows, the hint goes just under the last row, still centered.
+- **Open case:** the hint under the project list says "Scroll down to view" (it leaves with the list when the case
+  widens). On phones, where the list is hidden, the same words sit centered at the bottom of the full-screen case,
+  1.5rem plus the safe area plus 0.5rem up (clear of Safari's floating toolbar), 0.5 s after it opens and while it
+  sits at the top. They move above the preview's Client / Sector / Duration row if they would touch it.
 - **Copy:** optional attributes on the panel (`.project-list_panel` or `.archive_panel`): `data-hint-idle`,
   `data-hint-open`, their `-touch` versions, and `data-hint-scroll` (Project). An empty `data-hint-open` drops the
   Archive's second half.
+
+### Phones: edges and the Archive cover
+
+- **Ground to the edges:** html, body and `<meta name="theme-color">` take the current page's ground (its first
+  section's background, set on every page start including Barba swaps); the Archive then follows its cover
+  colour as it tweens. With `viewport-fit=cover` in the viewport meta (added in Webflow on the three pages), the
+  colour reaches under the status bar and the browser's bars.
+- **Archive cover on short phones** (v4.css, ≤ 767 px): the panel is `min(24.875rem, 55svh)` tall, the cover sits
+  1.5rem under it and is at most `min(14.5rem, 100svh − its top − 4rem − the bottom safe area)` tall, keeping its
+  13.75 : 14.5 proportions, so it never runs into the footer.
 
 ### The expand (Archive)
 

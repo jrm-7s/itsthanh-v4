@@ -23,6 +23,7 @@ function page({ ns, title, description, ink = 'dark', homeHead = false, preloade
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(description)}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="icon" href="data:,">
 <!-- Webflow site CSS (stand-in) -->
 <link href="/fixtures/webflow.css" rel="stylesheet" type="text/css">

@@ -160,17 +160,19 @@ body { width: 100vw; height: 5vh; margin: 0; min-height: 100%; background-color:
   .project-preview_meta-value { font-size: 0.6875rem; }
   .project-preview_strip, .project-preview_slats { width: 7.5rem; }
 
-  .section_archive { min-height: 40rem; }
-  .archive_panel { left: 0.5rem; right: 0.5rem; top: 4.5rem; bottom: auto; width: auto; height: 20.5rem; border-radius: 1.25rem; overflow: hidden; background-color: rgba(255, 255, 255, 0.74); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
-  .archive_list-wrapper { left: 1rem; right: 1rem; top: 0.75rem; bottom: 0.75rem; }
+  /* Staging, Oct 26: the panel is flush with the top (the nav sits in it), the cover below it. */
+  .section_archive { min-height: 0; }
+  .archive_panel { left: 0.5rem; right: 0.5rem; top: 0; bottom: auto; width: auto; height: 24.875rem; border-radius: 0 0 1.25rem 1.25rem; overflow: hidden; background-color: rgba(255, 255, 255, 0.94); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+  .archive_list-wrapper { left: 1rem; right: 1rem; top: calc(4.5rem + env(safe-area-inset-top)); bottom: 1rem; }
   .archive_item { height: 3.5rem; }
   .archive_link { gap: 0.625rem; }
   .archive_name { font-size: 1.0625rem; }
   .archive_tag { padding: 0.25rem 0.5rem; font-size: 0.5625rem; letter-spacing: 0.1em; }
   .archive_year { width: 2.25rem; font-size: 0.6875rem; }
   .archive_fade { display: block; position: absolute; left: 0; right: 0; bottom: 0; height: 4rem; background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.92)); pointer-events: none; }
-  .archive_cover-wrapper { left: 50%; top: auto; bottom: 4rem; width: 15.5rem; height: 15.5rem; transform: translateX(-50%); }
-  .archive_counter { top: 3.25rem; left: auto; right: 1.5rem; transform: none; font-size: 0.75rem; color: rgba(255, 255, 255, 0.75); }
+  .archive_cover-wrapper { left: 50%; top: 26.375rem; bottom: auto; width: 13.75rem; height: 14.5rem; transform: translateX(-50%); }
+  .archive_counter { display: none; }
+  .page-wrapper[data-namespace="archive"] .nav_component { --_v4---ink: #2b2b2b; }
   .archive_counter-current { color: #fff; }
   /* data-ink is one value per page; where a mobile layout needs the other ink, key it off data-namespace. */
   .page-wrapper[data-namespace="project"][data-ink] { --_v4---ink: #2b2b2b; }
