@@ -419,7 +419,13 @@ describe('page transitions', () => {
       await recordFlips(page);
       await page.click('.nav_link[href="/archive"]');
       if (variant === 'veil') {
-        await page.waitForFunction(() => window.__frames.some((f) => f.veil === 'inset(0%)' || f.veil === 'inset(0% 0% 0% 0%)'));
+        // Fully covered lasts at most a frame (the uncover starts right away), so accept nearly covered.
+        await page.waitForFunction(() => window.__frames.some((f) => {
+          const m = f.veil && /inset\(([^)]*)\)/.exec(f.veil);
+          if (!m) return false;
+          const v = m[1].trim().split(/\s+/).map(parseFloat);
+          return v[0] < 3 && (v.length < 3 ? v[0] : v[2]) < 3;
+        }));
         await page.screenshot({ path: path.join(SHOTS, 'transition-veil-covered.png') });
       } else if (variant !== 'glide') {
         await page.waitForTimeout(220);
