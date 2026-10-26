@@ -2,9 +2,10 @@
 // open in place (project-case.js). Ported from project-page-mockup-v2.html.
 
 import { gsap } from 'gsap';
-import { reduced, bag, bezier } from '../core/env.js';
+import { reduced, isMobile, bag, bezier } from '../core/env.js';
 import { loadCase } from '../core/casefetch.js';
 import { caseViewer } from './project-case.js';
+import { makeHint, copy, placeOnClock, placeInFlow, mqTouch } from '../core/hints.js';
 
 const SLATS = 6;
 const SLAT_MS = 560;       // each slat turns in 0.56 s…
@@ -51,6 +52,7 @@ export default function project(container) {
   });
 
   let alive = true;
+  let hintReady = false;
   let state = 'lineup';
   let current = -1;
   let intentTimer = 0;
@@ -184,6 +186,7 @@ export default function project(container) {
         it.preview.setAttribute('aria-hidden', on ? 'false' : 'true');
       }
     });
+    syncHint();
     const color = i >= 0 ? items[i].color : null;
     if (color) {
       stage.style.setProperty('--project-color', color);
@@ -366,7 +369,26 @@ export default function project(container) {
   }
 
   // Open in place; while a case is open, another row swaps to that project.
-  const viewer = caseViewer({ comp, stage, panel, items, slatsBox, settle, closed });
+  const viewer = caseViewer({ comp, stage, panel, items, slatsBox, settle, closed, changed: () => syncHint() });
+
+  // ---------- Hint under the list: what to do next ----------
+  // Desktop: bottom-right of the panel, on the year column and the clock's baseline. Phones and stacked
+  // tablets: just under the last row. Hidden while a case is open, loading or closing.
+  const hint = makeHint('v4-hint--project');
+  hintReady = true;
+  function placeHint() {
+    const lastRow = rows[rows.length - 1];
+    const year = lastRow && (lastRow.querySelector('.project-list_year') || lastRow);
+    const after = list && list !== panel ? list : lastRow;
+    if (isMobile() || !placeOnClock(hint.el, panel, year)) placeInFlow(hint.el, after);
+  }
+  function syncHint() {
+    if (!hintReady || !alive) return;
+    if (viewer.isActive() || viewer.isClosing()) { hint.set(''); return; }
+    hint.set(state === 'lineup'
+      ? copy(panel, 'idle', 'Hover a project to preview', 'Tap a project to preview')
+      : copy(panel, 'open', 'Click to open', 'Tap again to open'));
+  }
 
   function open(i) {
     clearTimeout(intentTimer);
@@ -491,8 +513,12 @@ export default function project(container) {
 
   let ro = null;
   if (typeof ResizeObserver !== 'undefined') {
-    ro = new ResizeObserver(() => { if (state === 'browsing' && current >= 0) alignSlats(current); });
+    ro = new ResizeObserver(() => {
+      if (state === 'browsing' && current >= 0) alignSlats(current);
+      if (!viewer.isActive()) placeHint();
+    });
     ro.observe(stage);
+    if (panel) ro.observe(panel);
   }
 
   // ---------- Start on the lineup ----------
@@ -501,6 +527,12 @@ export default function project(container) {
   if (slatsBox) gsap.set(slatsBox, { autoAlpha: 0 });
   if (lineup) gsap.set(lineup, { autoAlpha: 1 });
   setLineupHidden(false);
+  placeHint();
+  syncHint();
+  offs.on(window, 'resize', placeHint);
+  offs.on(document, 'v4:pagechange', placeHint);
+  offs.on(mqTouch, 'change', syncHint);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (alive) placeHint(); });
 
   return {
     destroy() {
@@ -510,6 +542,7 @@ export default function project(container) {
       clearTimeout(prefetchTimer);
       clearTimeout(graceTimer);
       viewer.destroy();
+      hint.destroy();
       offs.flush();
       if (ro) ro.disconnect();
     },

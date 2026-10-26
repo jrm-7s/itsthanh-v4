@@ -1620,6 +1620,209 @@ describe('archive', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
+describe('hints', () => {
+  const hintState = (page, sel) => page.evaluate((s) => {
+    const el = document.querySelector(s);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return {
+      target: el.getAttribute('data-hint'),
+      text: el.querySelector('.v4-hint_text').textContent,
+      opacity: Number(cs.opacity),
+      shown: cs.visibility === 'visible' && Number(cs.opacity) > 0.99 && Number(getComputedStyle(el.firstElementChild).opacity) > 0.99,
+      hidden: cs.visibility === 'hidden' || Number(cs.opacity) < 0.01,
+      pointer: cs.pointerEvents,
+      aria: el.getAttribute('aria-hidden'),
+      box: [r.left, r.top, r.right, r.bottom],
+      font: [cs.fontFamily.split(',')[0].replace(/"/g, ''), cs.textTransform, cs.letterSpacing],
+    };
+  }, sel);
+  const boxOf = (page, sel) => page.evaluate((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; }, sel);
+  const P = '.v4-hint--project';
+  const A = '.v4-hint--archive';
+  const CUE = '.v4-case_cue';
+
+  test('Project: lineup → preview → open → close switches the copy; it sits on the year column and the clock baseline', async () => {
+    const { page, close } = await open('/project');
+    await page.waitForTimeout(400);
+    let h = await hintState(page, P);
+    assert.equal(h.target, 'Hover a project to preview');
+    assert.equal(h.text, 'Hover a project to preview');
+    assert.equal(h.shown, true);
+    assert.equal(h.pointer, 'none', 'never blocks the pointer');
+    assert.equal(h.aria, 'true');
+    assert.deepEqual(h.font.slice(0, 2), ['Pitchsans', 'uppercase'], 'set like the footer clock');
+    const year = await boxOf(page, '.project-list_row:last-child .project-list_year, .project-list_item:last-child .project-list_year');
+    const clock = await boxOf(page, '.footer_clock-time');
+    assert.ok(Math.abs(h.box[2] - year[2]) < 1, `right edge on the year column (${h.box[2]} vs ${year[2]})`);
+    assert.ok(Math.abs(h.box[3] - clock[3]) < 1, `bottom on the clock's (${h.box[3]} vs ${clock[3]})`);
+    const panel = await boxOf(page, '.project-list_panel');
+    assert.ok(h.box[0] > panel[0] && h.box[2] <= panel[2] && h.box[3] <= panel[3], 'inside the panel');
+
+    await page.mouse.move(...(await (async () => { const b = await page.locator('.project-list_row').nth(1).boundingBox(); return [b.x + b.width / 2, b.y + b.height / 2]; })()));
+    await page.waitForTimeout(150);
+    assert.equal((await hintState(page, P)).target, 'Click to open');
+    await page.waitForTimeout(250);
+    h = await hintState(page, P);
+    assert.equal(h.text, 'Click to open', 'faded to the new copy within 0.3 s');
+    assert.equal(h.shown, true);
+
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForSelector('.v4-case');
+    await page.waitForTimeout(300);
+    h = await hintState(page, P);
+    assert.equal(h.target, '', 'hidden while a case is open');
+    assert.equal(h.hidden, true);
+
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.v4-case'), null, { timeout: 4000 });
+    await page.waitForTimeout(350);
+    h = await hintState(page, P);
+    assert.equal(h.target, 'Click to open', 'back with the preview');
+    assert.equal(h.shown, true);
+    await page.mouse.move(200, 120, { steps: 3 });
+    await page.waitForTimeout(800);
+    assert.equal((await hintState(page, P)).target, 'Hover a project to preview', 'and the lineup');
+
+    // Copy from data attributes on the panel.
+    await page.evaluate(() => document.querySelector('.project-list_panel').setAttribute('data-hint-open', 'Open it'));
+    const b = await page.locator('.project-list_row').nth(2).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(400);
+    assert.equal((await hintState(page, P)).target, 'Open it');
+    await close();
+  });
+
+  test('Project on touch: "Tap a project to preview", then "Tap again to open", under the last row', async () => {
+    const { page, close } = await open('/project', { viewport: PHONE, touch: true });
+    await page.waitForTimeout(400);
+    let h = await hintState(page, P);
+    assert.equal(h.target, 'Tap a project to preview');
+    const rule = await boxOf(page, '.project-list_item:last-child .project-list_row');
+    const list = await boxOf(page, '.project-list_list');
+    assert.ok(h.box[1] >= rule[3] && h.box[1] - rule[3] < 24, `just under the last row (${h.box[1]} vs ${rule[3]})`);
+    assert.ok(Math.abs(h.box[0] - list[0]) < 1, 'left-aligned with the list');
+    const footer = await boxOf(page, '.footer_clock');
+    const nav = await boxOf(page, '.nav_component');
+    assert.ok(h.box[3] < footer[1] && h.box[1] > nav[3], 'clear of the footer and the nav');
+    const b = await page.locator('.project-list_row').nth(2).boundingBox();
+    await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(400);
+    h = await hintState(page, P);
+    assert.equal(h.target, 'Tap again to open');
+    await close();
+  });
+
+  test('Archive: "Scroll or drag to browse" on a row without a page, "· Click to open" on one with a page', async () => {
+    const { page, close } = await open('/archive');
+    await page.waitForTimeout(400);
+    let h = await hintState(page, A);
+    assert.equal(h.target, 'Scroll or drag to browse', 'Talos has no page');
+    assert.equal(h.shown, true);
+    assert.equal(h.pointer, 'none');
+    const year = await boxOf(page, '.archive_year');
+    const clock = await boxOf(page, '.footer_clock-time');
+    assert.ok(Math.abs(h.box[2] - year[2]) < 1, 'right edge on the year column');
+    assert.ok(Math.abs(h.box[3] - clock[3]) < 1, "on the clock's baseline");
+    const b = await page.locator('[data-archive="list"]').boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.wheel(0, 100);
+    await page.waitForTimeout(700);
+    h = await hintState(page, A);
+    assert.equal(h.target, 'Scroll or drag to browse · Click to open', 'Cactus Lamp has a page');
+    assert.equal(h.text, 'Scroll or drag to browse · Click to open');
+    await page.mouse.wheel(0, -100);
+    await page.waitForTimeout(700);
+    assert.equal((await hintState(page, A)).target, 'Scroll or drag to browse');
+    await close();
+
+    const t = await open('/archive', { viewport: PHONE, touch: true });
+    await t.page.waitForTimeout(400);
+    h = await hintState(t.page, A);
+    assert.equal(h.target, 'Swipe to browse');
+    const cover = await boxOf(t.page, '[data-archive="covers"]');
+    const fclock = await boxOf(t.page, '.footer_clock');
+    assert.ok(h.box[1] > cover[3] && h.box[3] < fclock[1], `between the cover and the footer (${h.box} / ${cover[3]} / ${fclock[1]})`);
+    assert.ok(Math.abs((h.box[0] + h.box[2]) / 2 - PHONE.width / 2) < 1, 'centered');
+    await t.close();
+  });
+
+  test('open case: "Scroll to read ↓" fades in after 0.5 s at the top, leaves on scroll or collapse, returns at the top', async () => {
+    const { page, close } = await open('/project');
+    const b = await page.locator('.project-list_row').nth(1).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(500);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForSelector('.v4-case');
+    await page.waitForTimeout(250);
+    assert.equal((await hintState(page, CUE)).target, '', 'not straight away');
+    await page.waitForTimeout(700);
+    let c = await hintState(page, CUE);
+    assert.equal(c.target, 'Scroll to read ↓');
+    assert.equal(c.shown, true);
+    assert.equal(c.pointer, 'none');
+    const stage = await boxOf(page, '[data-project-stage]');
+    assert.ok(Math.abs((c.box[0] + c.box[2]) / 2 - (stage[0] + stage[2]) / 2) < 1.5, 'centered on the stage');
+    assert.ok(c.box[3] <= stage[3] && c.box[3] > stage[3] - 60, 'near the bottom of the stage');
+    const meta = await boxOf(page, '.project-preview_item.is-active .project-preview_meta');
+    const clear = c.box[3] <= meta[1] || c.box[1] >= meta[3] || c.box[2] <= meta[0] || c.box[0] >= meta[2];
+    assert.ok(clear, `clear of the Client / Sector / Duration row (${c.box} vs ${meta})`);
+
+    const scrollTo = (y) => page.evaluate((v) => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = v; st.dispatchEvent(new Event('scroll')); }, y);
+    await scrollTo(10);
+    await page.waitForTimeout(100);
+    assert.equal((await hintState(page, CUE)).target, 'Scroll to read ↓', 'a nudge under 24 px keeps it');
+    await scrollTo(200);
+    await page.waitForTimeout(300);
+    c = await hintState(page, CUE);
+    assert.equal(c.target, '');
+    assert.equal(c.hidden, true, 'gone once it scrolls and the list collapses');
+    await scrollTo(0);
+    await page.waitForTimeout(1000);
+    c = await hintState(page, CUE);
+    assert.equal(c.target, 'Scroll to read ↓', 'back at the top');
+    assert.equal(c.shown, true);
+    const stage2 = await boxOf(page, '[data-project-stage]');
+    assert.ok(Math.abs((c.box[0] + c.box[2]) / 2 - (stage2[0] + stage2[2]) / 2) < 1.5, 'placed on the stage again');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    assert.equal((await hintState(page, CUE)).target, '', 'gone as the case closes');
+    await close();
+
+    // Phones: the case opens full screen; the cue sits 1.5rem above the bottom.
+    const t = await open('/project', { viewport: PHONE, touch: true });
+    const r = await t.page.locator('.project-list_row').nth(0).boundingBox();
+    await t.page.touchscreen.tap(r.x + r.width / 2, r.y + r.height / 2);
+    await t.page.waitForTimeout(600);
+    await t.page.touchscreen.tap(r.x + r.width / 2, r.y + r.height / 2);
+    await t.page.waitForSelector('.v4-case');
+    await t.page.waitForTimeout(1200);
+    c = await hintState(t.page, CUE);
+    assert.equal(c.target, 'Scroll to read ↓');
+    assert.ok(Math.abs((c.box[0] + c.box[2]) / 2 - PHONE.width / 2) < 1.5);
+    assert.ok(PHONE.height - c.box[3] > 10 && PHONE.height - c.box[3] < 40, `about 1.5rem up (${PHONE.height - c.box[3]})`);
+    await t.page.evaluate(() => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = 300; st.dispatchEvent(new Event('scroll')); });
+    await t.page.waitForTimeout(300);
+    assert.equal((await hintState(t.page, CUE)).hidden, true);
+    await t.close();
+  });
+
+  test('reduced motion: the copy swaps at once', async () => {
+    const { page, close } = await open('/project', { reducedMotion: 'reduce' });
+    const b = await page.locator('.project-list_row').nth(0).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(120);
+    const h = await hintState(page, P);
+    assert.equal(h.text, 'Click to open');
+    assert.equal(h.shown, true);
+    await close();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
 describe('reduced motion', () => {
   const RM = { reducedMotion: 'reduce' };
 

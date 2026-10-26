@@ -14,11 +14,12 @@
 
 import { gsap } from 'gsap';
 import Lenis from 'lenis';
-import { reduced, isMobile, bezier } from '../core/env.js';
+import { reduced, isMobile, bezier, rootRem } from '../core/env.js';
 import { lockScroll, unlockScroll } from '../core/scroll.js';
 import { normPath } from '../core/router.js';
 import { loadCase, cachedCase } from '../core/casefetch.js';
 import { backdropOf } from '../core/expand.js';
+import { makeHint, copy } from '../core/hints.js';
 
 const COLLAPSE_AT = 24;                 // px of stage scroll before the list slides away
 const SLIDE = 0.65;                     // list away / stage widens
@@ -42,7 +43,7 @@ const SLOW = {};
 
 // settle(i, { animate }): the Project page shows row i's preview and nothing else (lineup hidden, timers and
 // fades cancelled). closed(i): a case was closed and the page is in charge again.
-export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed }) {
+export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed, changed = () => {} }) {
   const pageUrl = window.location.href;
   const pageTitle = document.title;
   let baseState = window.history.state; // the /project entry's own state (Barba's), restored when leaving
@@ -81,6 +82,55 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
   comp.append(pill);
   gsap.set(pill, { autoAlpha: 0 });
   pill.addEventListener('click', () => requestClose());
+
+  // "Scroll to read ↓" at the bottom of the stage, while an open case sits at its top.
+  const cue = makeHint('v4-case_cue');
+  comp.append(cue.el);
+  let cueArmed = false;
+  let cueTimer = 0;
+  function placeCue() {
+    const el = cue.el;
+    const r = stage.getBoundingClientRect();
+    const w = el.offsetWidth;
+    const h = el.offsetHeight || 12;
+    const cx = r.left + r.width / 2;
+    const pad = 8;
+    let off = 1.5 * rootRem();
+    // Keep clear of the preview's Client / Sector / Duration row: below it if there's room, else above it.
+    const meta = stage.querySelector('.project-preview_item.is-active .project-preview_meta');
+    const m = meta && meta.getBoundingClientRect();
+    if (m && m.height) {
+      const y1 = r.bottom - off;
+      const hitX = cx + w / 2 + pad > m.left && cx - w / 2 - pad < m.right;
+      const hitY = y1 + pad > m.top && y1 - h - pad < m.bottom;
+      if (hitX && hitY) {
+        const below = r.bottom - m.bottom;
+        off = below >= h + 2 * pad ? Math.max(pad, (below - h) / 2) : r.bottom - m.top + 12;
+      }
+    }
+    const bottom = Math.round(window.innerHeight - r.bottom + off);
+    el.style.left = `${Math.round(cx)}px`;
+    el.style.bottom = isMobile() ? `calc(${bottom}px + env(safe-area-inset-bottom, 0px))` : `${bottom}px`;
+  }
+  function updateCue() {
+    const show = openIdx >= 0 && !closing && cueArmed && !tl && stage.scrollTop < COLLAPSE_AT && (isMobile() || !collapsed);
+    if (show) {
+      const text = copy(panel, 'scroll', 'Scroll to read ↓');
+      if (cue.text() !== text) cue.el.querySelector('.v4-hint_text').textContent = text; // measure the real copy
+      placeCue();
+    }
+    cue.set(show ? copy(panel, 'scroll', 'Scroll to read ↓') : '');
+  }
+  function armCue() {
+    cueArmed = false;
+    clearTimeout(cueTimer);
+    cueTimer = setTimeout(() => { cueArmed = true; updateCue(); }, 500);
+  }
+  function disarmCue() {
+    cueArmed = false;
+    clearTimeout(cueTimer);
+    cue.set('');
+  }
   // Esc closes an open case, and cancels one that is still loading.
   const onKey = (e) => {
     if (e.key === 'Escape' && (openIdx >= 0 || pending >= 0)) { e.preventDefault(); requestClose(); }
@@ -141,6 +191,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
           restoreChrome();
         }
         resolve();
+        updateCue();
         return;
       }
       tlDone = resolve;
@@ -150,6 +201,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
           tlDone = null;
           if (!c) { unpin(); restoreChrome(); }
           resolve();
+          updateCue();
         },
       });
       if (c) {
@@ -191,8 +243,9 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
   }
 
   const onScroll = () => {
-    if (openIdx < 0 || closing || isMobile()) return;
-    setCollapsed(stage.scrollTop > COLLAPSE_AT);
+    if (openIdx < 0 || closing) return;
+    if (!isMobile()) setCollapsed(stage.scrollTop > COLLAPSE_AT);
+    updateCue();
   };
   // "Next project →" and links to other projects inside the body open in place.
   const onCaseClick = (e) => {
@@ -317,6 +370,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
     fadeIn();
     try { stage.focus({ preventScroll: true }); } catch (e) { /* old browsers */ }
     if (isMobile()) setCollapsed(true);
+    armCue();
   }
 
   function swap(i, data) {
@@ -326,9 +380,11 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
     wake(caseEl);
     if (!isMobile()) setCollapsed(false);
     fadeIn();
+    armCue();
   }
 
   function teardown(unlock = true) {
+    disarmCue();
     const a = document.activeElement;
     const hadFocus = !!a && (stage.contains(a) || a === pill);
     live.splice(0).forEach((off) => off());
@@ -391,6 +447,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
     if (swapping) swap(i, data);
     else mount(i, data);
     applyWheel();
+    changed();
   }
 
   // A running close jumps to its end (another open, a hover or the lineup wants the page back).
@@ -405,14 +462,20 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
     token++;
     finishProgress(true);
     collectWheel(false);
+    const wasPending = pending >= 0;
     pending = -1;
-    if (openIdx < 0) return Promise.resolve();
+    if (openIdx < 0) {
+      if (wasPending) changed(); // a cancelled load: the page takes input again
+      return Promise.resolve();
+    }
+    disarmCue();
     const was = openIdx;
     openIdx = -1;
     document.title = pageTitle;
     if (instant || reduced()) {
       teardown();
       closed(was);
+      changed();
       return Promise.resolve();
     }
     closing = true;
@@ -424,6 +487,7 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
         closing = false;
         teardown();
         closed(was);
+        changed();
         resolve();
       };
       job.tween = gsap.to(caseEl, {
@@ -517,6 +581,8 @@ export function caseViewer({ comp, stage, panel, items, slatsBox, settle, closed
       if (openIdx >= 0 || caseEl) { openIdx = -1; teardown(false); }
       document.removeEventListener('keydown', onKey);
       pill.remove();
+      clearTimeout(cueTimer);
+      cue.destroy();
     },
   };
 }

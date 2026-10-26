@@ -7,6 +7,7 @@ import { Observer } from 'gsap/Observer';
 import { reduced, isMobile, bag, bezier, clamp, luminance, pad } from '../core/env.js';
 import { navigate, exitWith } from '../core/router.js';
 import { expand, collapse } from '../core/expand.js';
+import { makeHint, copy, placeOnClock, placeCentered, footerTop, mqTouch } from '../core/hints.js';
 
 const K = 320;            // spring stiffness
 const C = 30;             // spring damping
@@ -36,6 +37,32 @@ export default function archive(container) {
   const panel = container.querySelector('.archive_panel');
   const pageWrap = document.querySelector('[data-barba="wrapper"]'); // never by class: case markup reuses .page-wrapper
   const offs = bag();
+
+  // Hint: "Scroll or drag to browse · Click to open" (just the first half on a row without a page).
+  const hint = makeHint('v4-hint--archive');
+  function syncHint() {
+    const r = rows[Math.max(0, sel)];
+    const idle = copy(panel, 'idle', 'Scroll or drag to browse', 'Swipe to browse');
+    const go = copy(panel, 'open', 'Click to open', 'Tap to open');
+    hint.set(r && r.querySelector('a[href]') && go ? `${idle} · ${go}` : idle);
+  }
+  // Desktop: bottom-right of the panel, on the year column and the clock's baseline. Phones: centered between
+  // the cover and the footer.
+  function placeHint() {
+    if (isMobile() && coversWrap) {
+      const host = section || container;
+      const cr = coversWrap.getBoundingClientRect();
+      if (hint.el.parentNode !== host) host.append(hint.el);
+      const h = hint.el.offsetHeight || 12;
+      placeCentered(hint.el, host, cr.left + cr.width / 2, (cr.bottom + footerTop()) / 2 - h / 2);
+      return;
+    }
+    const year = rows[0].querySelector('.archive_year') || rows[0];
+    if (!placeOnClock(hint.el, panel, year) && panel) {
+      const pr = panel.getBoundingClientRect();
+      placeCentered(hint.el, panel, pr.left + pr.width / 2, pr.bottom - (hint.el.offsetHeight || 12) - 16);
+    }
+  }
 
   let centers = [];
   let pitch = 1;
@@ -170,6 +197,7 @@ export default function archive(container) {
     setCounter(i + 1);
     setColor(rows[i].getAttribute('data-color'), first);
     setCover(i, first);
+    syncHint();
   }
 
   // ---------- Render: translate the list, blur and fade rows by distance ----------
@@ -363,9 +391,16 @@ export default function archive(container) {
 
   measure();
   render();
+  placeHint();
+  syncHint();
+  offs.on(window, 'resize', placeHint);
+  offs.on(document, 'v4:pagechange', placeHint);
+  offs.on(mqTouch, 'change', syncHint);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (hint.el.isConnected) placeHint(); });
 
   return {
     destroy() {
+      hint.destroy();
       observer.kill();
       stopSpring();
       clearTimeout(snapTimer);

@@ -83,6 +83,25 @@ Chosen by `data-v4-transition` on `.page-wrapper` (set it on each page in Webflo
   all of them are visible by default. Custom code in a case page's head (page settings) isn't brought along either.
   The real page, on reload or a direct visit, still has all of it.
 
+### Hints
+
+Small labels set like the footer clock (Pitchsans, uppercase, its colour), built by the script and styled in
+v4.css (`.v4-hint`). They are `aria-hidden` and never take pointer events; a copy change is a quick fade (instant
+under reduced motion).
+
+- **Project:** "Hover a project to preview" on the lineup, "Click to open" while a preview shows, hidden while a
+  case is open (touch: "Tap a project to preview", "Tap again to open"). Desktop: bottom-right of the list panel,
+  on the year column and the clock's baseline. Phones and stacked tablets: just under the last row.
+- **Archive:** "Scroll or drag to browse · Click to open", or just the first half when the centered row has no page
+  (touch: "Swipe to browse · Tap to open"). Desktop: as on the Project page; phones: centered between the cover
+  and the footer.
+- **Open case:** "Scroll to read ↓", centered 1.5rem above the bottom of the stage (plus the safe area on phones),
+  0.5 s after the case opens and while it sits at the top. It moves below or above the preview's Client / Sector /
+  Duration row if it would touch it.
+- **Copy:** optional attributes on the panel (`.project-list_panel` or `.archive_panel`): `data-hint-idle`,
+  `data-hint-open`, their `-touch` versions, and `data-hint-scroll` (Project). An empty `data-hint-open` drops the
+  Archive's second half.
+
 ### The expand (Archive)
 
 - A second click (or Enter) on the centered row with a page pins the cover `position: fixed` at its rect and grows it
