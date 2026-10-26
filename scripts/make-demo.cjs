@@ -1,10 +1,12 @@
-// Builds the static review demo from the fixtures: relative links (home.html, project.html, archive.html,
-// case.html), dist/, img/ and webflow.css side by side, plus a small transition picker on the three V4
-// pages (demo only, never in dist). An existing index.html launcher in the target folder is left alone.
+// Builds the static review demo from the fixtures: relative links (home.html, project.html, archive.html, the
+// four project pages as <slug>.html, case.html for archive entries), dist/, img/ and webflow.css side by side,
+// plus a small transition picker on the three V4 pages (demo only, never in dist). Project rows open in place
+// (fetching <slug>.html) when the demo is served over http(s); from file:// the fetch fails and they simply
+// load the page. An existing index.html launcher in the target folder is left alone.
 // Run after `npm run build`:  node scripts/make-demo.cjs <out-dir>
 const fs = require('node:fs');
 const path = require('node:path');
-const { PROJECTS, ARCHIVE } = require('./make-fixtures.cjs'); // also refreshes fixtures/
+const { PROJECTS, ARCHIVE, CASE_PAGES } = require('./make-fixtures.cjs'); // also refreshes fixtures/
 
 const ROOT = path.join(__dirname, '..');
 const OUT = path.resolve(process.argv[2] || path.join(ROOT, 'demo'));
@@ -18,8 +20,8 @@ function relink(html) {
     .replace(/href="\/"/g, 'href="home.html"')
     .replace(/href="\/project"/g, 'href="project.html"')
     .replace(/href="\/archive"/g, 'href="archive.html"');
-  // Every project and archive entry opens the one stand-in case page, told which item it is.
-  PROJECTS.forEach((p) => { s = s.split(`href="${p.href}"`).join(`href="case.html?p=${p.key}"`); });
+  // Projects link to their own (real-structure) pages; archive entries share one stand-in case page.
+  PROJECTS.forEach((p) => { s = s.split(`href="${p.href}"`).join(`href="${p.href.slice(1)}.html"`); });
   ARCHIVE.filter((a) => a.href).forEach((a) => { s = s.split(`href="${a.href}"`).join(`href="case.html?a=${a.slug}"`); });
   return s;
 }
@@ -73,6 +75,7 @@ for (const name of ['home', 'project', 'archive']) {
   fs.writeFileSync(path.join(OUT, `${name}.html`), html);
 }
 fs.writeFileSync(path.join(OUT, 'case.html'), relink(read('fixtures/case.html')));
+for (const slug of CASE_PAGES) fs.writeFileSync(path.join(OUT, `${slug}.html`), relink(read(`fixtures/cases/${slug}.html`)));
 fs.writeFileSync(path.join(OUT, 'webflow.css'), relink(read('fixtures/webflow.css')));
 for (const f of ['v4.min.js', 'v4.min.css']) fs.copyFileSync(path.join(ROOT, 'dist', f), path.join(OUT, 'dist', f));
 for (const f of fs.readdirSync(path.join(ROOT, 'fixtures', 'img'))) fs.copyFileSync(path.join(ROOT, 'fixtures', 'img', f), path.join(OUT, 'img', f));
