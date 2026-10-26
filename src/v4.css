@@ -84,6 +84,10 @@ html body { width: auto; height: auto; }
   background-color: var(--v4-case-ground, #f7f5f0);
 }
 .v4-case_body { position: relative; }
+/* Webflow background videos put the <video> at z-index -100. On their own page that sits behind the
+   page root; inside the case ground it would sit behind the ground and never show. Isolating each
+   background-video block keeps the video above its own block's background. */
+.v4-case_body .w-background-video { isolation: isolate; }
 .v4-case_next {
   display: flex;
   justify-content: space-between;
