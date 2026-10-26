@@ -1,0 +1,461 @@
+// Project: open a case study in place (Thanh's mockup "Project previews that open in place").
+//
+// Click a row (or tap it twice on a phone): no navigation. The preview stays as the stage's first screen, the
+// stage becomes a vertical scroll container, the case body (fetched from the real page, see core/casefetch.js)
+// is appended under it, and the URL becomes the project's real one (history.pushState).
+//   - Scrolling the stage past 24 px slides the list panel away (−90 px and a fade) and widens the stage to the
+//     whole window; back at the top the list slides back in. Phones open straight to the full-window state.
+//   - While the list is away, an "← All projects" pill sits top-left. Esc, the pill and the browser's Back
+//     close the case and return to /project, keeping that project's preview. "Next project →" at the end of
+//     the body, a row click, or a link to another project inside the body swap cases in place.
+//   - The stage scrolls with its own Lenis (the window's is paused); reduced motion uses native scroll and
+//     switches without slides or fades.
+// Barba also listens to popstate, so the router offers every popstate and every nav click to this viewer first.
+
+import { gsap } from 'gsap';
+import Lenis from 'lenis';
+import { reduced, isMobile, bezier } from '../core/env.js';
+import { lockScroll, unlockScroll } from '../core/scroll.js';
+import { normPath } from '../core/router.js';
+import { loadCase, cachedCase } from '../core/casefetch.js';
+import { backdropOf } from '../core/expand.js';
+
+const COLLAPSE_AT = 24;                 // px of stage scroll before the list slides away
+const SLIDE = 0.65;                     // list away / stage widens
+const slideEase = bezier(0.65, 0, 0.2, 1);
+const ease = bezier(0.25, 0.1, 0.25, 1); // CSS "ease"
+const Z = 95;                           // the pinned stage: above the page, under the nav (100) and the pill (101)
+const PIN_PROPS = 'position,top,left,width,height,margin,zIndex,backgroundColor,borderRadius';
+
+const samePage = (a, b) => {
+  try {
+    const x = new URL(a, window.location.href);
+    const y = new URL(b, window.location.href);
+    return x.origin === y.origin && normPath(x.pathname) === normPath(y.pathname);
+  } catch (e) {
+    return false;
+  }
+};
+
+export function caseViewer({ comp, stage, panel, items, slatsBox, showNow, showPreview, currentIndex }) {
+  const pageUrl = window.location.href;
+  const pageTitle = document.title;
+  let baseState = window.history.state; // the /project entry's own state (Barba's), restored when leaving
+  let openIdx = -1;   // whose case is open
+  let lastIdx = -1;   // the last one opened (focus returns to its row)
+  let pending = -1;   // whose case is loading
+  let token = 0;      // bumped by every open/close, so late fetches do nothing
+  let closing = false;
+  let caseEl = null;
+  let lenis = null;
+  let tick = null;
+  let collapsed = false;
+  let pinned = false;
+  let slot = null;
+  let radius = '';
+  let tl = null;
+  let tlDone = null;
+  let progress = null;
+  const live = [];    // listeners that exist while a case is open
+
+  const key = (i) => items[i].row.getAttribute('data-project');
+  const nameOf = (i) => {
+    const n = items[i].row.querySelector('.project-list_name');
+    return (n ? n.textContent : items[i].row.textContent).trim();
+  };
+  const frame = () => [...document.querySelectorAll('.nav_component, .footer_component')];
+  const viewport = () => ({ top: 0, left: 0, width: document.documentElement.clientWidth, height: window.innerHeight });
+
+  const pill = document.createElement('button');
+  pill.type = 'button';
+  pill.className = 'v4-case_back';
+  pill.textContent = '← All projects';
+  comp.append(pill);
+  gsap.set(pill, { autoAlpha: 0 });
+  pill.addEventListener('click', () => requestClose());
+  // Esc closes an open case, and cancels one that is still loading.
+  const onKey = (e) => {
+    if (e.key === 'Escape' && (openIdx >= 0 || pending >= 0)) { e.preventDefault(); requestClose(); }
+  };
+  document.addEventListener('keydown', onKey);
+
+  // ---------- Pinning: the stage leaves the layout (a hidden slot keeps its place) and can grow ----------
+  function pin() {
+    if (pinned) return;
+    pinned = true;
+    const r = stage.getBoundingClientRect();
+    const cs = getComputedStyle(stage);
+    const fill = backdropOf(stage);
+    radius = cs.borderRadius;
+    slot = document.createElement('div');
+    slot.className = 'v4-case_slot';
+    slot.setAttribute('aria-hidden', 'true');
+    slot.style.cssText = `height:${r.height}px;margin:${cs.margin};flex:0 0 auto;grid-column:${cs.gridColumn};grid-row:${cs.gridRow};visibility:hidden;pointer-events:none;`;
+    const y = stage.scrollTop;
+    stage.parentNode.insertBefore(slot, stage);
+    gsap.set(stage, { position: 'fixed', top: r.top, left: r.left, width: r.width, height: r.height, margin: 0, zIndex: Z, backgroundColor: fill });
+    stage.scrollTop = y;
+  }
+
+  function unpin() {
+    if (!pinned) return;
+    pinned = false;
+    const y = stage.scrollTop;
+    gsap.set(stage, { clearProps: PIN_PROPS });
+    if (slot) { slot.remove(); slot = null; }
+    stage.scrollTop = y;
+  }
+
+  function restoreChrome() {
+    if (panel) gsap.set(panel, { clearProps: 'transform,opacity,visibility' });
+    gsap.set(frame(), { clearProps: 'opacity,visibility' });
+    gsap.set(pill, { autoAlpha: 0, y: 0 });
+  }
+
+  // Collapsed = the list is away and the stage fills the window (always the case on phones while open).
+  function setCollapsed(c) {
+    if (c === collapsed) return Promise.resolve();
+    collapsed = c;
+    if (tl) { tl.kill(); tl = null; }
+    if (tlDone) { const d = tlDone; tlDone = null; d(); }
+    const out = isMobile() ? { x: 0, y: 60 } : { x: -90, y: 0 };
+    const chrome = frame();
+    return new Promise((resolve) => {
+      if (reduced()) {
+        if (c) {
+          pin();
+          gsap.set(stage, { ...viewport(), borderRadius: 0 });
+          if (panel) gsap.set(panel, { ...out, autoAlpha: 0 });
+          gsap.set(chrome, { autoAlpha: 0 });
+          gsap.set(pill, { autoAlpha: 1, y: 0 });
+        } else {
+          unpin();
+          restoreChrome();
+        }
+        resolve();
+        return;
+      }
+      tlDone = resolve;
+      tl = gsap.timeline({
+        onComplete: () => {
+          tl = null;
+          tlDone = null;
+          if (!c) { unpin(); restoreChrome(); }
+          resolve();
+        },
+      });
+      if (c) {
+        pin();
+        tl.to(stage, { ...viewport(), borderRadius: 0, duration: SLIDE, ease: slideEase }, 0);
+        if (panel) tl.to(panel, { ...out, duration: SLIDE, ease: slideEase }, 0).to(panel, { autoAlpha: 0, duration: 0.45, ease }, 0);
+        tl.to(chrome, { autoAlpha: 0, duration: 0.45, ease }, 0)
+          .fromTo(pill, { autoAlpha: 0, y: -6 }, { autoAlpha: 1, y: 0, duration: 0.3, ease }, 0.3);
+      } else {
+        const r = (slot || stage).getBoundingClientRect();
+        tl.to(stage, { top: r.top, left: r.left, width: r.width, height: r.height, borderRadius: radius, duration: SLIDE, ease: slideEase }, 0);
+        if (panel) tl.to(panel, { x: 0, y: 0, duration: SLIDE, ease: slideEase }, 0).to(panel, { autoAlpha: 1, duration: 0.45, ease }, 0.15);
+        tl.to(chrome, { autoAlpha: 1, duration: 0.45, ease }, 0.15)
+          .to(pill, { autoAlpha: 0, y: -6, duration: 0.2, ease }, 0);
+      }
+    });
+  }
+
+  // ---------- The stage's own scroll ----------
+  function startLenis() {
+    if (reduced() || lenis) return;
+    lenis = new Lenis({
+      wrapper: stage, content: caseEl, eventsTarget: stage,
+      lerp: 0.1, smoothWheel: true, syncTouch: false, autoRaf: false, naiveDimensions: true,
+    });
+    tick = (t) => { if (lenis) lenis.raf(t * 1000); };
+    gsap.ticker.add(tick);
+  }
+
+  function stopLenis() {
+    if (tick) gsap.ticker.remove(tick);
+    tick = null;
+    if (lenis) { lenis.destroy(); lenis = null; }
+  }
+
+  function scrollTop(y) {
+    if (lenis) lenis.scrollTo(y, { immediate: true, force: true });
+    stage.scrollTop = y;
+  }
+
+  const onScroll = () => {
+    if (openIdx < 0 || closing || isMobile()) return;
+    setCollapsed(stage.scrollTop > COLLAPSE_AT);
+  };
+  // "Next project →" and links to other projects inside the body open in place.
+  const onCaseClick = (e) => {
+    if (e.defaultPrevented || e.button > 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || !caseEl || !caseEl.contains(a)) return;
+    const i = items.findIndex((it) => samePage(it.row.href, a.href));
+    if (i < 0) return; // anything else: the router's usual handling
+    e.preventDefault();
+    open(i, 'replace');
+  };
+
+  // ---------- Loading bar across the top of the stage ----------
+  function showProgress() {
+    if (progress) return;
+    progress = document.createElement('div');
+    progress.className = 'v4-case_progress';
+    progress.setAttribute('role', 'progressbar');
+    progress.setAttribute('aria-label', 'Loading project');
+    stage.append(progress);
+    if (reduced()) gsap.set(progress, { scaleX: 0.85 });
+    else gsap.fromTo(progress, { scaleX: 0 }, { scaleX: 0.85, duration: 0.24, ease: 'power2.out' });
+  }
+
+  // Resolves once the bar is full; it then fades on its own.
+  function finishProgress(instant) {
+    const p = progress;
+    progress = null;
+    if (!p) return Promise.resolve();
+    gsap.killTweensOf(p);
+    if (instant || reduced()) { p.remove(); return Promise.resolve(); }
+    return new Promise((resolve) => {
+      gsap.timeline({ onComplete: () => p.remove() })
+        .to(p, { scaleX: 1, duration: 0.12, ease: 'power1.out', onComplete: resolve })
+        .to(p, { opacity: 0, duration: 0.26, ease });
+    });
+  }
+
+  // ---------- Body ----------
+  function build(i, data) {
+    const frag = document.createDocumentFragment();
+    const body = document.createElement('div');
+    body.className = 'v4-case_body';
+    body.append(data.fragment.cloneNode(true));
+    const n = (i + 1) % items.length;
+    const next = document.createElement('a');
+    next.className = 'v4-case_next';
+    next.href = items[n].row.getAttribute('href');
+    next.setAttribute('data-next-index', String(n));
+    const label = document.createElement('span');
+    label.className = 'v4-case_next-label';
+    label.textContent = 'Next project';
+    const title = document.createElement('span');
+    title.className = 'v4-case_next-name';
+    title.textContent = `${nameOf(n)} →`;
+    next.append(label, title);
+    frag.append(body, next);
+    return frag;
+  }
+
+  // Background videos and Lottie don't start by themselves once injected.
+  function wake(root) {
+    root.querySelectorAll('video').forEach((v) => {
+      if (!v.hasAttribute('autoplay')) return;
+      v.muted = true;
+      v.playsInline = true;
+      try {
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+      } catch (e) { /* no source */ }
+    });
+    if (root.querySelector('[data-animation-type="lottie"]')) {
+      try {
+        const wf = window.Webflow;
+        const lottie = wf && typeof wf.require === 'function' ? wf.require('lottie') : null;
+        if (lottie && typeof lottie.init === 'function') lottie.init();
+      } catch (e) { /* leave it static */ }
+    }
+  }
+
+  function fadeIn() {
+    if (!reduced() && caseEl) gsap.fromTo(caseEl, { opacity: 0 }, { opacity: 1, duration: 0.3, ease });
+  }
+
+  function mount(i, data) {
+    caseEl = document.createElement('div');
+    caseEl.className = 'v4-case';
+    caseEl.setAttribute('data-case-for', key(i));
+    caseEl.append(build(i, data));
+    stage.append(caseEl);
+    stage.setAttribute('data-case', 'open');
+    stage.setAttribute('data-lenis-prevent', '');
+    stage.setAttribute('tabindex', '-1'); // focus moves into the case, so keys (Space, arrows) scroll it
+    stage.scrollTop = 0;
+    if (slatsBox) gsap.set(slatsBox, { autoAlpha: 0 }); // the preview's own strip shows the same image
+    lockScroll(); // the window's Lenis stands still while the stage scrolls
+    startLenis();
+    const on = (t, type, fn, o) => { t.addEventListener(type, fn, o); live.push(() => t.removeEventListener(type, fn, o)); };
+    on(stage, 'scroll', onScroll, { passive: true });
+    on(caseEl, 'click', onCaseClick);
+    wake(caseEl);
+    fadeIn();
+    try { stage.focus({ preventScroll: true }); } catch (e) { /* old browsers */ }
+    if (isMobile()) setCollapsed(true);
+  }
+
+  function swap(i, data) {
+    scrollTop(0);
+    caseEl.replaceChildren(build(i, data));
+    caseEl.setAttribute('data-case-for', key(i));
+    wake(caseEl);
+    if (!isMobile()) setCollapsed(false);
+    fadeIn();
+  }
+
+  function teardown(unlock = true) {
+    const a = document.activeElement;
+    const hadFocus = !!a && (stage.contains(a) || a === pill);
+    live.splice(0).forEach((off) => off());
+    if (tl) { tl.kill(); tl = null; }
+    if (tlDone) { const d = tlDone; tlDone = null; d(); }
+    stopLenis();
+    if (caseEl) { gsap.killTweensOf(caseEl); caseEl.remove(); caseEl = null; }
+    stage.removeAttribute('data-case');
+    stage.removeAttribute('data-lenis-prevent');
+    stage.removeAttribute('tabindex');
+    stage.scrollTop = 0;
+    unpin();
+    restoreChrome();
+    collapsed = false;
+    if (unlock) {
+      unlockScroll();
+      // Back to the row of the project that was open (not during a Barba leave: that page is going away).
+      const row = items[lastIdx] && items[lastIdx].row;
+      if (hadFocus && row) { try { row.focus({ preventScroll: true }); } catch (e) { /* old browsers */ } }
+    }
+  }
+
+  // ---------- Open / close ----------
+  // how: 'push' (first open), 'replace' (swap while open), 'none' (arrived here through history)
+  async function open(i, how = 'push') {
+    const it = items[i];
+    if (!it || closing || i === openIdx || !it.row.getAttribute('href')) return;
+    const me = ++token;
+    const swapping = openIdx >= 0;
+    pending = i;
+    if (currentIndex() !== i) {
+      if (currentIndex() < 0) showNow(i);
+      else showPreview(i);
+    }
+    let data = cachedCase(it.row.href);
+    if (data === undefined) {
+      showProgress();
+      data = await loadCase(it.row.href);
+      if (me !== token) return;
+      await finishProgress();
+      if (me !== token) return;
+    }
+    pending = -1;
+    if (!data) { // the page couldn't be read: just go there
+      const go = window.V4 && typeof window.V4.assign === 'function' ? window.V4.assign : (u) => window.location.assign(u);
+      go(it.row.href);
+      return;
+    }
+    const entry = { v4case: { key: key(i), href: it.row.href } };
+    if (how === 'push') {
+      baseState = window.history.state;
+      window.history.pushState(Object.assign({}, baseState, entry), '', it.row.href);
+    } else if (how === 'replace') {
+      window.history.replaceState(Object.assign({}, baseState, entry), '', it.row.href);
+    }
+    document.title = data.title || pageTitle;
+    openIdx = i;
+    lastIdx = i;
+    if (swapping) swap(i, data);
+    else mount(i, data);
+  }
+
+  function close({ instant = false } = {}) {
+    token++;
+    finishProgress(true);
+    pending = -1;
+    if (openIdx < 0) return Promise.resolve();
+    openIdx = -1;
+    document.title = pageTitle;
+    if (instant || reduced()) {
+      teardown();
+      return Promise.resolve();
+    }
+    closing = true;
+    return new Promise((resolve) => {
+      gsap.to(caseEl, {
+        opacity: 0,
+        duration: 0.25,
+        ease,
+        onComplete: () => {
+          scrollTop(0);
+          setCollapsed(false).then(() => {
+            teardown();
+            closing = false;
+            resolve();
+          });
+        },
+      });
+    });
+  }
+
+  // Esc and the pill step back in history, so Back/Forward stay in step with what's on screen.
+  function requestClose() {
+    const st = window.history.state;
+    if (openIdx >= 0 && st && st.v4case) window.history.back();
+    else close();
+  }
+
+  // ---------- Hooks the router calls first ----------
+  // popstate: returns true when it was ours (the router then stops Barba from seeing it).
+  function popstate(e) {
+    const st = e.state && e.state.v4case;
+    if (st) {
+      const i = items.findIndex((it) => it.row.getAttribute('data-project') === st.key);
+      if (i < 0) return false;
+      if (i !== openIdx) open(i, 'none');
+      return true;
+    }
+    if (openIdx >= 0 || pending >= 0) {
+      if (samePage(window.location.href, pageUrl)) { close(); return true; }
+      close({ instant: true }); // jumping further back: Barba takes it from here
+    }
+    return false;
+  }
+
+  // A click on a V4 page link (or V4.navigate). Returns true when handled here.
+  function navigating(href) {
+    if (openIdx < 0 && pending < 0) return false;
+    if (samePage(href, pageUrl)) { requestClose(); return true; } // "Project" itself: just close
+    // Leaving for Home or Archive: put /project back in this history entry, close at once, and let Barba run
+    // the normal transition from the Project page.
+    const st = window.history.state;
+    if (st && st.v4case) window.history.replaceState(baseState, '', pageUrl);
+    close({ instant: true });
+    return false;
+  }
+
+  // Back/Forward restored the page from the browser cache. If its history entry is the open case, the case
+  // stays (the window's Lenis is paused again); anything else closes at once. Returns whether it stayed.
+  function restore() {
+    const st = window.history.state && window.history.state.v4case;
+    if (openIdx >= 0 && st && st.key === key(openIdx)) {
+      lockScroll();
+      return true;
+    }
+    close({ instant: true });
+    return false;
+  }
+
+  return {
+    open,
+    close,
+    restore,
+    requestClose,
+    popstate,
+    navigating,
+    isActive: () => openIdx >= 0 || pending >= 0,
+    openIndex: () => openIdx,
+    destroy() {
+      token++;
+      finishProgress(true);
+      pending = -1;
+      if (openIdx >= 0) { openIdx = -1; teardown(false); } // a Barba leave: the router owns the scroll lock now
+      document.removeEventListener('keydown', onKey);
+      pill.remove();
+    },
+  };
+}

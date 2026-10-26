@@ -34,7 +34,7 @@ export default function archive(container) {
   const counter = container.querySelector('[data-archive="counter"]');
   const coversWrap = container.querySelector('[data-archive="covers"]');
   const panel = container.querySelector('.archive_panel');
-  const pageWrap = document.querySelector('[data-barba="wrapper"]') || document.querySelector('.page-wrapper');
+  const pageWrap = document.querySelector('[data-barba="wrapper"]'); // never by class: case markup reuses .page-wrapper
   const offs = bag();
 
   let centers = [];

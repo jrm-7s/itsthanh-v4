@@ -1,12 +1,10 @@
-// Project: lineup → hover previews with the slat flip and text roll → back to the lineup.
-// Ported from project-page-mockup-v2.html (its open-in-place and list-hiding parts were dropped).
-// Opening a project doesn't use the page transition: the preview stage expands to fill the window and
-// fades to the case study's ground, then the project page loads (see core/expand.js).
+// Project: lineup → hover previews with the slat flip and text roll → back to the lineup, and projects
+// open in place (project-case.js). Ported from project-page-mockup-v2.html.
 
 import { gsap } from 'gsap';
 import { reduced, bag, bezier } from '../core/env.js';
-import { exitWith } from '../core/router.js';
-import { expand, collapse, caseGround, backdropOf } from '../core/expand.js';
+import { loadCase } from '../core/casefetch.js';
+import { caseViewer } from './project-case.js';
 
 const SLATS = 6;
 const SLAT_MS = 560;       // each slat turns in 0.56 s…
@@ -61,7 +59,6 @@ export default function project(container) {
   let overList = false;
   let lastPointer = '';
   let lastPressAt = -Infinity;
-  let opening = false; // the expand is running: hover and grace stand still
   let slatRun = 0;
   let slatTarget = -1;
 
@@ -270,18 +267,14 @@ export default function project(container) {
     if (lineup) gsap.to(lineup, { autoAlpha: 1, duration: FADE, ease });
   }
 
-  // ---------- Prefetch: once per row, the project page and its strip image ----------
+  // ---------- Prefetch: once per row, the project page (fetched and parsed for opening in place) and its
+  // strip image ----------
   function prefetch(i) {
     const it = items[i];
-    if (!alive || !it || it.prefetched) return;
+    if (!alive || !it) return;
+    if (it.row.getAttribute('href')) loadCase(it.row.href); // cached per URL; a failed fetch is tried again
+    if (it.prefetched) return;
     it.prefetched = true;
-    const href = it.row.href;
-    if (href && ![...document.head.querySelectorAll('link[rel="prefetch"]')].some((l) => l.href === href)) {
-      const link = document.createElement('link');
-      link.rel = 'prefetch';
-      link.href = href;
-      document.head.append(link);
-    }
     const src = stripSrc(i);
     if (src) {
       const im = new Image();
@@ -293,7 +286,7 @@ export default function project(container) {
 
   // ---------- Input ----------
   function hover(i, how) {
-    if (!alive || opening) return;
+    if (!alive || viewer.isActive()) return; // while a case is open, hovering rows doesn't switch previews
     clearTimeout(graceTimer);
     if (state === 'lineup') {
       clearTimeout(intentTimer);
@@ -308,14 +301,11 @@ export default function project(container) {
   }
 
   function scheduleGrace() {
-    if (opening) return;
+    if (viewer.isActive()) return;
     clearTimeout(graceTimer);
     clearTimeout(intentTimer);
     graceTimer = setTimeout(() => { if (alive && !overList) returnToLineup(false); }, GRACE_MS);
   }
-
-  // The V4 nav and footer belong to this page, not to the case study: they fade with the list.
-  const frameEls = () => [...document.querySelectorAll('.nav_component, .footer_component')];
 
   // The preview for row i at once: no fade, no roll (a click can land before the hover intent).
   function showNow(i) {
@@ -330,21 +320,16 @@ export default function project(container) {
     if (lineup) gsap.set(lineup, { autoAlpha: 0 });
   }
 
-  // Open: the list slides away, the preview stage grows to fill the window so it reads as the opening of
-  // the case study, the page fades to the case-study ground, then the (prefetched) project page loads.
+  // Open in place; while a case is open, another row swaps to that project.
+  const viewer = caseViewer({
+    comp, stage, panel, items, slatsBox, showNow, showPreview, currentIndex: () => current,
+  });
+
   function open(i) {
-    const it = items[i];
-    if (!it || !it.row.getAttribute('href') || opening) return;
-    if (state !== 'browsing' || current !== i) showNow(i);
     clearTimeout(intentTimer);
     clearTimeout(graceTimer);
     prefetch(i);
-    const ground = it.row.getAttribute('data-ground') || caseGround();
-    const fill = backdropOf(stage);
-    opening = exitWith(() => {
-      if (slatsBox) gsap.set(slatsBox, { autoAlpha: 0 }); // the preview's own strip shows the same image
-      return expand(stage, { ground, fill, slide: [panel], fade: frameEls() });
-    }, it.row.href, 'expand');
+    viewer.open(i, viewer.openIndex() >= 0 ? 'replace' : 'push');
   }
 
   const isTouchy = (type) => type === 'touch' || type === 'pen';
@@ -411,19 +396,19 @@ export default function project(container) {
       clearTimeout(intentTimer);
       clearTimeout(prefetchTimer);
       clearTimeout(graceTimer);
+      viewer.destroy();
       offs.flush();
       if (ro) ro.disconnect();
     },
-    // Back from a project page (back/forward cache): reverse the expand, then return to the lineup.
-    restore(info) {
+    // Back/Forward from the browser cache: a case whose URL this is stays open (left by a link inside it);
+    // otherwise close any case at once and start again on the lineup.
+    restore() {
       overList = false;
-      if (info && info.kind === 'expand' && opening) {
-        opening = false;
-        collapse(stage, { slide: [panel], fade: frameEls() }).then(() => { if (alive) returnToLineup(false); });
-        return;
-      }
-      opening = false;
+      if (viewer.restore()) return;
       returnToLineup(true);
     },
+    // The router offers these to the active page before Barba sees them.
+    popstate: (e) => viewer.popstate(e),
+    navigating: (href) => viewer.navigating(href),
   };
 }

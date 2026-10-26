@@ -7,7 +7,9 @@
 //   description (and og/twitter/canonical), keep w--current in sync and scroll to the top.
 // - Links to any other page on the site (project pages, archive entries) skip Barba: the current page
 //   leaves with the same transition, then location.assign does a normal load. Page modules can leave
-//   their own way instead (the Project and Archive "expand") through exitWith().
+//   their own way instead (the Archive "expand") through exitWith().
+// - The active page module sees every popstate and every V4 link click first (popstate / navigating hooks),
+//   so the Project page can keep its in-place case entries away from Barba.
 // - pageshow with persisted (Back/Forward from the cache) resets the page and turns it back in.
 
 import barba from '@barba/core';
@@ -122,7 +124,7 @@ function assign(href) {
 }
 
 /**
- * Leave for a normal page load with a custom animation (the Project and Archive expand). `run` returns a
+ * Leave for a normal page load with a custom animation (the Archive expand). `run` returns a
  * promise; when it settles the browser navigates. On a back/forward-cache restore the active module's
  * restore({ kind }) gets to reverse it.
  */
@@ -149,13 +151,22 @@ export function flipExit(href) {
   if (w) w.setAttribute('data-flip', 'out');
 }
 
+/** Let the active page react to a move to another V4 page first (e.g. close an in-place case). */
+function offerToPage(href) {
+  const mod = activeModule();
+  if (!mod || typeof mod.navigating !== 'function') return false;
+  try { return mod.navigating(href) === true; } catch (err) { console.error('[v4] navigating hook failed', err); return false; }
+}
+
 /** Go to any internal URL: the three V4 pages by Barba, everything else by a transition out + load. */
 export function navigate(href) {
   if (busy || !href) return;
   const u = toURL(href);
   if (!u) return;
-  if (hasBarba && isPage(u.href)) barba.go(u.href);
-  else flipExit(u.href);
+  if (hasBarba && isPage(u.href)) {
+    if (offerToPage(u.href)) return;
+    barba.go(u.href);
+  } else flipExit(u.href);
 }
 
 export const isBusy = () => busy;
@@ -175,11 +186,23 @@ function onClick(e) {
     return;
   }
   if (hasBarba && isPage(u.href)) {
-    if (busy) e.preventDefault();
-    return; // Barba takes it
+    if (busy) { e.preventDefault(); return; }
+    // The page goes first (this listener runs before Barba's): it may handle the click itself.
+    if (offerToPage(u.href)) { e.preventDefault(); e.stopImmediatePropagation(); }
+    return; // otherwise Barba takes it
   }
   e.preventDefault();
   flipExit(u.href);
+}
+
+// Every popstate goes to the active page first (registered before Barba's own listener). History entries a
+// page pushed itself (the Project's in-place cases) never reach Barba, so Back never runs a page transition.
+function onPopState(e) {
+  const mod = activeModule();
+  if (!mod || typeof mod.popstate !== 'function') return;
+  let handled = false;
+  try { handled = mod.popstate(e) === true; } catch (err) { console.error('[v4] popstate hook failed', err); }
+  if (handled) e.stopImmediatePropagation();
 }
 
 // Back/Forward restored the page from the cache: undo however it was left.
@@ -220,8 +243,8 @@ const transition = {
       w.setAttribute('data-flip-variant', variantName());
     }
     html.classList.add('v4-flipping');
-    lockScroll();
     unmount(); // stops the old page's timers; its visuals stay as they are while it leaves
+    lockScroll();
     freeze(data.current.container);
     scrollToTop(); // the next page starts at the top
   },
@@ -255,6 +278,7 @@ export function initRouter() {
   pages = readPages();
   try { window.history.scrollRestoration = 'manual'; } catch (e) { /* older browsers */ }
   document.addEventListener('click', onClick);
+  window.addEventListener('popstate', onPopState); // before barba.init, so it runs first
   window.addEventListener('pageshow', onPageShow);
 
   const w = wrapperEl();

@@ -21,30 +21,30 @@
 html body { width: auto; height: auto; }
 
 /* ---------- Ink ----------
-   Webflow's V4 variables come out as --_v4---<name>. The script sets data-ink="light" on .page-wrapper
+   Webflow's V4 variables come out as --_v4---<name>. The script sets data-ink="light" on .page-wrapper[data-barba="wrapper"]
    over dark Archive covers; nav links (and anything else using the ink variable) swap to ink-light.
    To rename: change --_v4---ink / --_v4---ink-light here; --v4-ink is the contract's alias. */
-.page-wrapper { --v4-ink: var(--_v4---ink, #2b2b2b); }
-.page-wrapper[data-ink="light"] { --_v4---ink: var(--_v4---ink-light, #ffffff); }
+.page-wrapper[data-barba="wrapper"] { --v4-ink: var(--_v4---ink, #2b2b2b); }
+.page-wrapper[data-barba="wrapper"][data-ink="light"] { --_v4---ink: var(--_v4---ink-light, #ffffff); }
 
 /* The current page's nav link at full ink (the base nav_link is dimmed in Webflow). */
 .nav_link.w--current { opacity: 1; }
 
 /* Footer text uses the quiet color, not ink, because on desktop Archive the clock sits on the white panel.
    Over a dark cover only VER flips light on desktop; on mobile the whole footer does.
-   data-namespace on .page-wrapper is set by the script from the Barba namespace. */
-.page-wrapper[data-namespace="archive"][data-ink="light"] .footer_version { color: var(--_v4---ink); }
+   data-namespace on .page-wrapper[data-barba="wrapper"] is set by the script from the Barba namespace. */
+.page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .footer_version { color: var(--_v4---ink); }
 @media (max-width: 767px) {
-  .page-wrapper[data-namespace="archive"][data-ink="light"] .footer_component,
-  .page-wrapper[data-namespace="archive"][data-ink="light"] .footer_clock,
-  .page-wrapper[data-namespace="archive"][data-ink="light"] .footer_clock-zone,
-  .page-wrapper[data-namespace="archive"][data-ink="light"] .footer_clock-time,
-  .page-wrapper[data-namespace="archive"][data-ink="light"] .footer_version { color: var(--_v4---ink); }
+  .page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .footer_component,
+  .page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .footer_clock,
+  .page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .footer_clock-zone,
+  .page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .footer_clock-time,
+  .page-wrapper[data-barba="wrapper"][data-namespace="archive"][data-ink="light"] .footer_version { color: var(--_v4---ink); }
 }
 
 /* ---------- Page transitions (Home ⇄ Project ⇄ Archive) ---------- */
 /* While a page moves, clip it to the wrapper so it never creates scrollbars. */
-.page-wrapper[data-flip] { overflow: hidden; overflow: clip; }
+.page-wrapper[data-barba="wrapper"][data-flip] { overflow: hidden; overflow: clip; }
 
 /* The "veil" variant: a soft lavender sheet with a little grain, wiped over the content area.
    It sits under the nav and footer (z 100), so the frame stays still. Built by the script. */
@@ -66,7 +66,74 @@ html body { width: auto; height: auto; }
   background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>") 0 0 / 180px 180px;
 }
 
-/* ---------- Opening a project or archive entry (the expand) ---------- */
+/* ---------- Project: a case study open in place ----------
+   The stage becomes the scroll container: the preview stays as its first screen and the case body (fetched
+   from the project's page) sits under it. Everything here is built by the script; Webflow can restyle it. */
+[data-project-stage][data-case] {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  outline: none; /* it takes focus on open so the keyboard scrolls it */
+}
+.v4-case {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background-color: var(--v4-case-ground, #f7f5f0);
+}
+.v4-case_body { position: relative; }
+.v4-case_next {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1.5rem;
+  padding: 2rem 3.5rem 3rem;
+  border-top: 1px solid rgba(43, 43, 43, 0.14);
+  color: #2b2b2b; /* the case ground is always light; the page's ink can be white */
+  text-decoration: none;
+}
+.v4-case_next-label { font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.6; }
+.v4-case_next-name { font-size: 2rem; line-height: 1.2; }
+.v4-case_next:hover .v4-case_next-name { color: var(--_v4---brand, #7d7bb6); }
+.v4-case_back {
+  position: fixed;
+  z-index: 101;
+  top: 1.625rem;
+  left: 1.625rem;
+  padding: 0.625rem 0.875rem;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 10px rgba(30, 25, 50, 0.12);
+  color: #2b2b2b;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+  visibility: hidden;
+  opacity: 0;
+}
+.v4-case_back:focus-visible { outline: 2px solid var(--_v4---brand, #7d7bb6); outline-offset: 3px; }
+.v4-case_progress {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--_v4---brand, #7d7bb6);
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  pointer-events: none;
+}
+@media (max-width: 767px) {
+  .v4-case_back { top: calc(0.875rem + env(safe-area-inset-top, 0px)); left: 1rem; }
+  .v4-case_next { padding: 1.5rem 1.25rem 2.5rem; }
+  .v4-case_next-name { font-size: 1.25rem; }
+}
+
+/* ---------- Opening an archive entry (the expand) ---------- */
 /* The colour the page fades to before a case study loads: the cream behind the LFLA-layout pages.
    A row can override it with data-ground. */
 :root { --v4-case-ground: #f7f5f0; }
@@ -230,5 +297,5 @@ html.is-preloading body { overflow: hidden; }
 
 /* Project at 991px and below: the nav sits on the pale ground, not over images, so keep the dark ink. */
 @media (max-width: 991px) {
-  .page-wrapper[data-namespace="project"][data-ink] { --_v4---ink: #2b2b2b; }
+  .page-wrapper[data-barba="wrapper"][data-namespace="project"][data-ink] { --_v4---ink: #2b2b2b; }
 }
