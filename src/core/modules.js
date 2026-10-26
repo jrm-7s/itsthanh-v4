@@ -2,7 +2,7 @@
 // bundle, and the module for the current namespace is started with init(container) and stopped with destroy().
 //
 // A module is a factory: (container, info) => ({ destroy?, restore? }).
-//   info.arrival: 'load' (fresh page load) | 'flip' (arrived by the Barba page flip)
+//   info.arrival: 'load' (fresh page load) | 'flip' (arrived by a Barba page transition)
 //   destroy(): stop timers, listeners and tickers. It must NOT revert visuals: the old page is still visible
 //              while it turns away.
 //   restore(): optional, called when the page comes back from the back/forward cache.

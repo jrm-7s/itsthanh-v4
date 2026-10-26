@@ -215,7 +215,7 @@ export default function home(container, { arrival = 'load' } = {}) {
     else gsap.set(cellEls(), { transformPerspective: 420, rotationY: 90, opacity: 0 });
   }
 
-  // Arriving by page flip (or when the preloader was skipped): the grid is there at once, the wave starts.
+  // Arriving by a page transition (or when the preloader was skipped): the grid is there at once, the wave starts.
   function quickEntrance() {
     entered = true;
     wavesOn = true;

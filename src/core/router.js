@@ -1,17 +1,19 @@
-// Barba 2 router for the three V4 pages, plus the flip-out path for every other internal link.
+// Barba 2 router for the three V4 pages, plus the leave path for every other internal link.
 //
 // - The Barba pages are read from the nav: every a[data-flip-index] is a page, and its index sets the
-//   flip direction (0 Home, 1 Project, 2 Archive). Going up in index turns forward, going down turns back.
+//   transition direction (0 Home, 1 Project, 2 Archive). Up in index is forward, down is back.
+// - The transition itself lives in transitions.js (glide by default; see data-v4-transition).
 // - Barba prefetches a page when its link is hovered (built in), updates <title>, and we copy the meta
 //   description (and og/twitter/canonical), keep w--current in sync and scroll to the top.
 // - Links to any other page on the site (project pages, archive entries) skip Barba: the current page
-//   flips away, then location.href does a normal load.
+//   leaves with the same transition, then location.assign does a normal load. Page modules can leave
+//   their own way instead (the Project and Archive "expand") through exitWith().
 // - pageshow with persisted (Back/Forward from the cache) resets the page and turns it back in.
 
 import barba from '@barba/core';
 import { gsap } from 'gsap';
 import { html } from './env.js';
-import { freeze, clearPage, hideShadow, flipPages, flipOut, flipIn } from './flip.js';
+import { freeze, clearPage, hideShadow, hideVeil, swapPages, leavePage, enterPage, variantName } from './transitions.js';
 import { lockScroll, unlockScroll, scrollToTop } from './scroll.js';
 import { mount, unmount, activeModule } from './modules.js';
 
@@ -30,6 +32,7 @@ let pages = new Map(DEFAULT_PAGES);
 let hasBarba = false;
 let busy = false;
 let flipDir = 1;
+let exitKind = null; // how the page was left for a normal load: 'transition' | 'expand' | null
 
 const wrapperEl = () => document.querySelector('[data-barba="wrapper"]');
 const containerEl = () => document.querySelector('[data-barba="container"]');
@@ -111,17 +114,42 @@ function webflowReinit() {
   }
 }
 
-/** Flip the current page away, then do a normal page load. */
-export function flipExit(href) {
-  if (busy) return;
-  busy = true;
-  lockScroll();
-  const w = wrapperEl();
-  if (w) w.setAttribute('data-flip', 'out');
-  flipOut(containerEl()).then(() => { window.location.href = href; });
+/** The final hop to another document. Tests replace window.V4.assign to stay on the page. */
+function assign(href) {
+  const api = window.V4;
+  if (api && typeof api.assign === 'function') api.assign(href);
+  else window.location.assign(href);
 }
 
-/** Go to any internal URL: the three V4 pages by Barba flip, everything else by flip-out + load. */
+/**
+ * Leave for a normal page load with a custom animation (the Project and Archive expand). `run` returns a
+ * promise; when it settles the browser navigates. On a back/forward-cache restore the active module's
+ * restore({ kind }) gets to reverse it.
+ */
+export function exitWith(run, href, kind = 'expand') {
+  if (busy || !href) return false;
+  busy = true;
+  exitKind = kind;
+  lockScroll();
+  const w = wrapperEl();
+  if (w) w.setAttribute('data-flip', kind);
+  Promise.resolve()
+    .then(run)
+    .catch((err) => console.error('[v4] exit animation failed', err))
+    .then(() => assign(href));
+  return true;
+}
+
+/** Leave with the page transition's "out" half, then do a normal page load. */
+export function flipExit(href) {
+  if (busy) return;
+  const w = wrapperEl();
+  if (w) w.setAttribute('data-flip-variant', variantName());
+  exitWith(() => leavePage(containerEl(), 1), href, 'transition');
+  if (w) w.setAttribute('data-flip', 'out');
+}
+
+/** Go to any internal URL: the three V4 pages by Barba, everything else by a transition out + load. */
 export function navigate(href) {
   if (busy || !href) return;
   const u = toURL(href);
@@ -154,37 +182,46 @@ function onClick(e) {
   flipExit(u.href);
 }
 
+// Back/Forward restored the page from the cache: undo however it was left.
 function onPageShow(e) {
   if (!e.persisted) return;
+  const kind = exitKind;
+  exitKind = null;
   const el = containerEl();
-  if (el) gsap.killTweensOf(el);
-  clearPage(el);
-  hideShadow();
   const w = wrapperEl();
-  if (w) w.removeAttribute('data-flip');
+  if (w) { w.removeAttribute('data-flip'); w.removeAttribute('data-flip-variant'); }
   html.classList.remove('v4-flipping');
   busy = false;
   syncNav();
-  const mod = activeModule();
-  if (mod && typeof mod.restore === 'function') {
-    try { mod.restore(); } catch (err) { console.error('[v4] restore failed', err); }
-  }
   unlockScroll();
-  flipIn(el);
+  const mod = activeModule();
+  if (kind !== 'expand') {
+    if (el) gsap.killTweensOf(el);
+    clearPage(el);
+    hideShadow();
+    if (kind !== 'transition') hideVeil(); // a veil exit is undone by the veil itself
+  }
+  if (mod && typeof mod.restore === 'function') {
+    try { mod.restore({ kind }); } catch (err) { console.error('[v4] restore failed', err); }
+  }
+  if (kind === 'transition') enterPage(el, -1);
 }
 
 const transition = {
-  name: 'v4-flip',
+  name: 'v4-page',
   sync: true,
   // Order in sync mode: next container added → beforeLeave → beforeEnter → leave + enter → after.
   beforeLeave(data) {
     busy = true;
     flipDir = indexOf(data.next.url.href) >= indexOf(data.current.url.href) ? 1 : -1;
     const w = wrapperEl();
-    if (w) w.setAttribute('data-flip', flipDir > 0 ? 'forward' : 'back');
+    if (w) {
+      w.setAttribute('data-flip', flipDir > 0 ? 'forward' : 'back');
+      w.setAttribute('data-flip-variant', variantName());
+    }
     html.classList.add('v4-flipping');
     lockScroll();
-    unmount(); // stops the old page's timers; its visuals stay as they are while it turns
+    unmount(); // stops the old page's timers; its visuals stay as they are while it leaves
     freeze(data.current.container);
     scrollToTop(); // the next page starts at the top
   },
@@ -196,14 +233,15 @@ const transition = {
     mount(data.next.container, { arrival: 'flip' });
   },
   leave(data) {
-    return flipPages({ from: data.current.container, to: data.next.container, dir: flipDir });
+    return swapPages({ from: data.current.container, to: data.next.container, dir: flipDir });
   },
   enter() {},
   after(data) {
     clearPage(data.next.container);
     hideShadow();
+    hideVeil();
     const w = wrapperEl();
-    if (w) w.removeAttribute('data-flip');
+    if (w) { w.removeAttribute('data-flip'); w.removeAttribute('data-flip-variant'); }
     html.classList.remove('v4-flipping');
     webflowReinit();
     syncNav();
@@ -231,7 +269,7 @@ export function initRouter() {
     });
     hasBarba = true;
   } catch (err) {
-    console.warn('[v4] page flip disabled:', err && err.message);
+    console.warn('[v4] page transitions disabled:', err && err.message);
   }
   return hasBarba;
 }

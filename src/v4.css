@@ -42,10 +42,48 @@ html body { width: auto; height: auto; }
   .page-wrapper[data-namespace="archive"][data-ink="light"] .footer_version { color: var(--_v4---ink); }
 }
 
-/* ---------- Page flip ---------- */
-/* While a page turns it grows toward the viewer; clip it to the wrapper so it never creates scrollbars.
-   (Scrolling itself is paused by Lenis while the page turns.) */
+/* ---------- Page transitions (Home ⇄ Project ⇄ Archive) ---------- */
+/* While a page moves, clip it to the wrapper so it never creates scrollbars. */
 .page-wrapper[data-flip] { overflow: hidden; overflow: clip; }
+
+/* The "veil" variant: a soft lavender sheet with a little grain, wiped over the content area.
+   It sits under the nav and footer (z 100), so the frame stays still. Built by the script. */
+.v4-veil {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 90;
+  display: none;
+  pointer-events: none;
+  background-color: var(--_v4---preloader-wash, #c5c3e4);
+  background-image: radial-gradient(120% 90% at 50% 0%, rgba(250, 248, 252, 0.55) 0%, rgba(250, 248, 252, 0) 70%);
+}
+.v4-veil::after {
+  content: "";
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>") 0 0 / 180px 180px;
+}
+
+/* ---------- Opening a project or archive entry (the expand) ---------- */
+/* The colour the page fades to before a case study loads: the cream behind the LFLA-layout pages.
+   A row can override it with data-ground. */
+:root { --v4-case-ground: #f7f5f0; }
+.v4-ground {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 1100;
+  display: none;
+  pointer-events: none;
+}
+
+/* Cross-document view transitions: if the destination page opts in too, the browser crossfades instead
+   of flashing white between documents. Barba's swaps are same-document (pushState), so they never trigger it. */
+@view-transition { navigation: auto; }
+@media (prefers-reduced-motion: reduce) {
+  @view-transition { navigation: none; }
+}
 
 /* ---------- Preloader (the rest of its CSS is inline in the Home head so it paints first) ---------- */
 html.is-preloading,

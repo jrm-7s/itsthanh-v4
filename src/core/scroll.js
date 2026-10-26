@@ -37,7 +37,7 @@ export function initScroll() {
 
 export const getLenis = () => lenis;
 
-/** Pause scrolling (page flip, preloader). */
+/** Pause scrolling (page transitions, the expand, the preloader). */
 export function lockScroll() {
   locked = true;
   if (lenis) lenis.stop();
