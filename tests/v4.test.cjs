@@ -115,6 +115,42 @@ const navState = (page) => page.evaluate(() => ({
   scrollY: window.scrollY,
 }));
 
+/** The project pages fetched (by fetch(), for opening in place), in order. */
+function trackCaseFetches(page) {
+  const list = [];
+  page.on('request', (r) => { if (r.resourceType() === 'fetch') list.push(new URL(r.url()).pathname); });
+  return list;
+}
+
+/** The Project page's in-place case: URL, title, history entry, stage, list panel, pill and scroll. */
+const caseState = (page) => page.evaluate(() => {
+  const st = document.querySelector('[data-project-stage]');
+  const panel = document.querySelector('.project-list_panel');
+  const pill = document.querySelector('.v4-case_back');
+  const m = new DOMMatrix(getComputedStyle(panel).transform);
+  const v4case = history.state && history.state.v4case;
+  return {
+    path: location.pathname,
+    title: document.title,
+    state: v4case ? v4case.key : null,
+    open: st.getAttribute('data-case'),
+    pos: st.style.position,
+    rect: st.getBoundingClientRect().toJSON(),
+    top: Math.round(st.scrollTop),
+    panel: Number(getComputedStyle(panel).opacity),
+    panelX: Math.round(m.m41 * 100) / 100,
+    panelY: Math.round(m.m42 * 100) / 100,
+    pill: pill ? Number(getComputedStyle(pill).opacity) : null,
+    pillVis: pill ? getComputedStyle(pill).visibility : null,
+    nav: Number(getComputedStyle(document.querySelector('.nav_component')).opacity),
+    winY: window.scrollY,
+    flip: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip'),
+    active: [...document.querySelectorAll('.project-preview_item.is-active')].map((p) => p.dataset.project),
+    windowLenisStopped: document.documentElement.classList.contains('lenis-stopped'),
+    stageLenis: st.classList.contains('lenis'),
+  };
+});
+
 // ---------------------------------------------------------------------------------------------------
 describe('pages load cleanly', () => {
   for (const [name, url, vp] of [['home', '/', DESKTOP], ['project', '/project', DESKTOP], ['archive', '/archive', DESKTOP],
@@ -522,6 +558,7 @@ describe('project', () => {
 
   test('lineup → hover preview (80 ms intent, fade only) → slat flip and text roll → grace → lineup', async () => {
     const { page, close } = await open('/project');
+    const fetched = trackCaseFetches(page);
     let s = await state(page);
     assert.equal(s.lineupHidden, false);
     assert.deepEqual(s.active, []);
@@ -541,8 +578,7 @@ describe('project', () => {
     assert.equal(s.rules, 1);
     assert.deepEqual(s.slatShown, Array(6).fill('recto-verso'));
     assert.equal(s.slatsMoving, 0, 'the first hover is a fade, no slat flip');
-    const prefetched = await page.evaluate(() => [...document.head.querySelectorAll('link[rel="prefetch"]')].map((l) => new URL(l.href).pathname));
-    assert.deepEqual(prefetched, ['/project-t---recto-verso']);
+    assert.deepEqual(fetched, ['/project-t---recto-verso'], 'the hover intent fetched the project page');
     // The slat layer sits exactly on the active strip.
     const align = await page.evaluate(() => {
       const a = document.querySelector('[data-project-slats]').getBoundingClientRect();
@@ -619,109 +655,445 @@ describe('project', () => {
     await close();
   });
 
-  test('click expands the preview to fill the window, fades to the case-study ground, then opens', async () => {
+  // ---------- Opening a project in place ----------
+  const LFLA_BODY = ['aloud-overview', 'div-block-442', 'div-block-451', 'div-block-455', 'div-block-455'];
+  const caseOpen = (page, key) => page.waitForFunction((k) => {
+    const c = document.querySelector('.v4-case');
+    return !!c && c.getAttribute('data-case-for') === k && !c.getAnimations().length && Number(getComputedStyle(c).opacity) === 1;
+  }, key, { timeout: 5000 });
+  const caseClosed = (page) => page.waitForFunction(() => !document.querySelector('.v4-case')
+    && !document.querySelector('[data-project-stage]').style.position, null, { timeout: 5000 });
+  const clickRow = async (page, i) => {
+    await page.mouse.move(...(await center(page, i)));
+    await page.mouse.down();
+    await page.mouse.up();
+  };
+  // The page itself never changes: a marker on the document and on the Barba container survives.
+  const mark = (page) => page.evaluate(() => { window.__doc = 'same'; document.querySelector('[data-barba="container"]').__same = true; });
+  const sameDocument = (page) => page.evaluate(() => window.__doc === 'same'
+    && document.querySelectorAll('[data-barba="container"]').length === 1 && document.querySelector('[data-barba="container"]').__same === true);
+
+  test('click opens the project in place: no navigation, URL and title from the page, its body under the preview', async () => {
     const { page, close } = await open('/project');
-    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push([href, performance.now()]); });
+    const fetched = trackCaseFetches(page);
+    const navigations = [];
+    page.on('request', (r) => { if (r.isNavigationRequest()) navigations.push(r.url()); });
+    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push(href); });
+    await mark(page);
+    const stageBefore = await page.evaluate(() => document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON());
+    const lengthBefore = await page.evaluate(() => history.length);
+    const rootFont = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+
     await page.mouse.move(...(await center(page, 3)));
     await page.waitForTimeout(600);
-    const stageBefore = await page.evaluate(() => document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON());
-    const t0 = await page.evaluate(() => performance.now());
+    assert.deepEqual(fetched, ['/library-foundation-of-los-angeles'], 'fetched on the hover intent');
     await page.mouse.down();
     await page.mouse.up();
-    await page.waitForTimeout(300);
-    await page.screenshot({ path: path.join(SHOTS, 'expand-project-mid.png') });
-    await page.waitForFunction(() => window.__assigned.length === 1, null, { timeout: 3000 });
-    const done = await page.evaluate(() => {
+    await caseOpen(page, 'aloud');
+    const s = await caseState(page);
+    assert.equal(s.path, '/library-foundation-of-los-angeles', 'the URL is the real case page');
+    assert.equal(s.title, 'A New Narrative | Thanh Quach', "the fetched page's title");
+    assert.equal(s.state, 'aloud', 'our own history entry');
+    assert.equal(await page.evaluate(() => history.length), lengthBefore + 1, 'pushed, not replaced');
+    assert.equal(await sameDocument(page), true, 'no navigation, no Barba swap');
+    assert.deepEqual(navigations, [], 'no document request');
+    assert.deepEqual(await page.evaluate(() => window.__assigned), []);
+    assert.equal(s.flip, null);
+    assert.deepEqual(s.active, ['aloud'], 'the preview stays');
+    assert.equal(s.open, 'open');
+    assert.equal(s.pos, '', 'not collapsed at the top');
+    assert.ok(Math.abs(s.rect.left - stageBefore.left) < 1 && Math.abs(s.rect.width - stageBefore.width) < 1, 'the stage stays beside the list');
+    assert.equal(s.panel, 1);
+    assert.equal(s.pillVis, 'hidden');
+    assert.equal(s.windowLenisStopped, true, "the window's Lenis is paused");
+    assert.equal(s.stageLenis, true, 'the stage scrolls with its own Lenis');
+
+    const body = await page.evaluate(() => {
       const st = document.querySelector('[data-project-stage]');
+      const c = document.querySelector('.v4-case');
+      const b = c.querySelector('.v4-case_body');
       return {
-        assigned: window.__assigned[0],
-        flip: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip'),
-        variant: document.querySelector('[data-barba="wrapper"]').getAttribute('data-flip-variant'),
-        position: getComputedStyle(st).position,
-        rect: st.getBoundingClientRect().toJSON(),
-        panel: Number(getComputedStyle(document.querySelector('.project-list_panel')).opacity),
-        nav: Number(getComputedStyle(document.querySelector('.nav_component')).opacity),
-        ground: getComputedStyle(document.querySelector('.v4-ground')).backgroundColor,
-        groundOpacity: Number(getComputedStyle(document.querySelector('.v4-ground')).opacity),
-        container: document.querySelector('[data-barba="container"]').getAttribute('style'),
-        prefetched: [...document.head.querySelectorAll('link[rel="prefetch"]')].map((l) => new URL(l.href).pathname),
+        kids: [...b.children].map((k) => k.className),
+        caseTop: c.offsetTop,
+        stageHeight: st.clientHeight,
+        scrollable: st.scrollHeight > st.clientHeight * 2,
+        heroes: c.querySelectorAll('.split-layout').length,
+        wrappers: c.querySelectorAll('.page-wrapper, .main-bq, [data-barba]').length,
+        navs: c.querySelectorAll('nav, .link-block-3').length,
+        scripts: c.querySelectorAll('script').length,
+        ranScripts: [window.__caseScriptRan, window.__embedScriptRan],
+        styles: [...c.querySelectorAll('style')].map((x) => x.textContent.trim()),
+        rootFont: getComputedStyle(document.documentElement).fontSize,
+        noteColor: getComputedStyle(c.querySelector('.case-note')).color,
+        staggers: c.querySelectorAll('.stagger-word').length,
+        ix2: c.querySelectorAll('[data-w-id]').length,
+        counters: ['counter1', 'counter2', 'counter3'].map((id) => !!c.querySelector(`#${id}`)),
+        embeds: c.querySelectorAll('iframe, video').length,
+        images: [...c.querySelectorAll('img')].every((im) => im.getAttribute('loading') === 'lazy'),
+        srcset: !!c.querySelector('img[srcset]'),
+        next: c.querySelector('.v4-case_next').textContent,
+        nextHref: new URL(c.querySelector('.v4-case_next').href).pathname,
       };
     });
-    assert.equal(new URL(done.assigned[0]).pathname, '/library-foundation-of-los-angeles');
-    const ms = done.assigned[1] - t0;
-    assert.ok(ms > 780 && ms < 1000, `the expand takes about 0.85 s (${Math.round(ms)} ms)`);
-    assert.equal(done.flip, 'expand', 'not the page transition');
-    assert.equal(done.variant, null);
-    assert.ok(!done.container, 'the page container itself never moves');
-    assert.ok(stageBefore.left > 300, 'the stage started beside the list');
-    assert.equal(done.position, 'fixed');
-    assert.deepEqual([done.rect.left, done.rect.top, Math.round(done.rect.width), Math.round(done.rect.height)], [0, 0, 1440, 900], 'the stage fills the window');
-    assert.ok(done.panel < 0.01, 'the list slid away');
-    assert.ok(done.nav < 0.01, 'the V4 nav faded');
-    assert.equal(done.ground, 'rgb(247, 245, 240)', 'cream, the case-study ground');
-    assert.equal(done.groundOpacity, 1);
-    assert.ok(done.prefetched.includes('/library-foundation-of-los-angeles'), 'the page was prefetched');
+    assert.deepEqual(body.kids, LFLA_BODY, "the page-wrapper's last five children");
+    assert.equal(body.caseTop, body.stageHeight, 'the body starts right under the preview');
+    assert.ok(body.scrollable);
+    assert.equal(body.heroes, 0, 'no hero (split-layout)');
+    assert.equal(body.wrappers, 0, 'no .page-wrapper, .main-bq or Barba attributes injected');
+    assert.equal(body.navs, 0, 'no close-X nav');
+    assert.equal(body.scripts, 0, 'scripts stripped');
+    assert.deepEqual(body.ranScripts, [undefined, undefined], 'and never ran');
+    assert.deepEqual(body.styles, ['.div-block-451 .case-note { color: rgb(125, 123, 182); }'], 'only the non-root style embed is kept');
+    assert.equal(body.noteColor, 'rgb(125, 123, 182)');
+    assert.equal(body.rootFont, rootFont, "the case page's html font-size reset is not injected");
+    assert.equal(body.staggers, 35);
+    assert.equal(body.ix2, 5);
+    assert.deepEqual(body.counters, [true, true, true]);
+    assert.equal(body.embeds, 9, 'iframes and videos kept');
+    assert.equal(body.images, true);
+    assert.equal(body.srcset, true);
+    assert.match(body.next, /Next project\s*Recto Verso →/);
+    assert.equal(body.nextHref, '/project-t---recto-verso', 'wraps around to the first project');
+    await page.screenshot({ path: path.join(SHOTS, 'case-open.png') });
 
-    // Back from the case study (back/forward cache): it collapses to the list, then the lineup returns.
-    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
-    await page.waitForTimeout(350);
-    await page.screenshot({ path: path.join(SHOTS, 'expand-project-collapsing.png') });
-    await page.mouse.move(1300, 120);
-    await page.waitForFunction(() => {
-      const st = document.querySelector('[data-project-stage]');
-      return !st.style.position && !document.querySelector('[data-project-lineup]').classList.contains('is-hidden');
-    }, null, { timeout: 4000 });
-    await page.waitForTimeout(500);
-    const back = await page.evaluate(() => ({
-      stage: document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON(),
-      panel: getComputedStyle(document.querySelector('.project-list_panel')).opacity,
-      nav: getComputedStyle(document.querySelector('.nav_component')).opacity,
-      ground: getComputedStyle(document.querySelector('.v4-ground')).display,
-      lineup: getComputedStyle(document.querySelector('[data-project-lineup]')).opacity,
-      busy: window.V4.isBusy(),
-    }));
-    assert.ok(Math.abs(back.stage.left - stageBefore.left) < 1 && Math.abs(back.stage.width - stageBefore.width) < 1, 'the stage is back in its place');
-    assert.equal(back.panel, '1');
-    assert.equal(back.nav, '1');
-    assert.equal(back.ground, 'none');
-    assert.equal(back.lineup, '1', 'back on the lineup');
-    assert.equal(back.busy, false);
+    // Fetched once per project, however many times it opens.
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+    await clickRow(page, 3);
+    await caseOpen(page, 'aloud');
+    assert.deepEqual(fetched, ['/library-foundation-of-los-angeles'], 'still one fetch');
     await close();
   });
 
-  test('expand hands over to the case page (cross-document view transition when both opt in)', async () => {
+  test('scrolling the stage past 24 px slides the list away and widens the stage; at the top it comes back', async () => {
     const { page, close } = await open('/project');
+    const stageBefore = await page.evaluate(() => document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON());
+    await clickRow(page, 2);
+    await caseOpen(page, 'rio-grande');
+    const scrollStage = (y) => page.evaluate((v) => {
+      const st = document.querySelector('[data-project-stage]');
+      st.scrollTop = v;
+      st.dispatchEvent(new Event('scroll'));
+    }, y);
+
+    await scrollStage(20);
+    await page.waitForTimeout(250);
+    let s = await caseState(page);
+    assert.equal(s.pos, '', '20 px: still beside the list');
+    assert.equal(s.panel, 1);
+
+    await scrollStage(30);
+    await page.waitForTimeout(300);
+    s = await caseState(page);
+    assert.equal(s.pos, 'fixed', 'pinned while it grows');
+    assert.ok(s.panelX < -5 && s.panelX > -90, `the list is sliding (${s.panelX})`);
+    assert.ok(s.rect.left > 0 && s.rect.left < stageBefore.left, 'the stage is widening');
+    await page.screenshot({ path: path.join(SHOTS, 'case-collapsing.png') });
+    await page.waitForTimeout(600);
+    s = await caseState(page);
+    assert.deepEqual([s.rect.left, s.rect.top, Math.round(s.rect.width), Math.round(s.rect.height)], [0, 0, 1440, 900], 'the stage fills the window');
+    assert.equal(s.panel, 0);
+    assert.equal(s.panelX, -90, 'the list slid 90 px left');
+    assert.equal(s.nav, 0, 'the V4 nav steps aside for the pill');
+    assert.equal(s.pill, 1);
+    assert.equal(s.pillVis, 'visible');
+    assert.equal(s.top, 30, 'the scroll position survives the pinning');
+    await page.screenshot({ path: path.join(SHOTS, 'case-collapsed.png') });
+
+    // The wheel scrolls the stage (its own Lenis), never the window.
+    await page.mouse.move(900, 500);
+    for (let k = 0; k < 5; k++) { await page.mouse.wheel(0, 150); await page.waitForTimeout(40); }
+    await page.waitForTimeout(900);
+    s = await caseState(page);
+    assert.ok(s.top > 400, `the stage scrolled (${s.top})`);
+    assert.equal(s.winY, 0, 'the window did not');
+
+    // Back to the top with the wheel.
+    await page.waitForTimeout(800); // let the stage's Lenis settle
+    for (let k = 0; k < 5; k++) { await page.mouse.wheel(0, -400); await page.waitForTimeout(40); }
+    await page.waitForFunction(() => document.querySelector('[data-project-stage]').scrollTop === 0, null, { timeout: 4000 });
+    await page.waitForTimeout(800);
+    s = await caseState(page);
+    assert.equal(s.pos, '', 'back in the layout');
+    assert.ok(Math.abs(s.rect.left - stageBefore.left) < 1 && Math.abs(s.rect.width - stageBefore.width) < 1, 'the stage is back beside the list');
+    assert.equal(s.panel, 1);
+    assert.equal(s.panelX, 0);
+    assert.equal(s.nav, 1);
+    assert.equal(s.pillVis, 'hidden');
+    assert.equal(s.open, 'open', 'still open');
+    assert.equal(s.path, '/rio-grande-rv-resort');
+    await close();
+  });
+
+  test('Back, Esc and the pill close the case without a page transition; Forward reopens it', async () => {
+    const { page, close } = await open('/project');
+    await recordFlips(page);
+    await mark(page);
+    await clickRow(page, 0);
+    await caseOpen(page, 'recto-verso');
+    const rv = await page.evaluate(() => {
+      const b = document.querySelector('.v4-case_body');
+      return { kids: b.children.length, videos: [...b.querySelectorAll('.w-background-video video')].map((v) => v.muted && v.autoplay), title: document.title };
+    });
+    assert.equal(rv.kids, 15, 'Recto Verso: all 15 children of the single wrapper');
+    assert.deepEqual(rv.videos, [true, true, true], 'background videos kept, muted, autoplay');
+    assert.equal(rv.title, 'Recto Verso | Thanh Quach');
+
+    // Back
+    await page.goBack();
+    await caseClosed(page);
+    let s = await caseState(page);
+    assert.equal(s.path, '/project');
+    assert.equal(s.title, 'Projects | Thanh Quach');
+    assert.deepEqual(s.active, ['recto-verso'], "that project's preview stays");
+    assert.equal(s.windowLenisStopped, false, "the window's Lenis runs again");
+    assert.equal(s.open, null);
+
+    // Forward
+    await page.goForward();
+    await caseOpen(page, 'recto-verso');
+    s = await caseState(page);
+    assert.equal(s.path, '/project-t---recto-verso');
+    assert.equal(s.title, 'Recto Verso | Thanh Quach');
+
+    // Esc (steps back in history, so Forward stays in step)
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+    s = await caseState(page);
+    assert.equal(s.path, '/project');
+    assert.equal(s.state, null);
+
+    // The pill, once the list has slid away
+    await clickRow(page, 0);
+    await caseOpen(page, 'recto-verso');
+    await page.evaluate(() => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = 600; st.dispatchEvent(new Event('scroll')); });
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.v4-case_back')).opacity === '1', null, { timeout: 3000 });
+    assert.equal(await page.textContent('.v4-case_back'), '← All projects');
+    const pill = await page.locator('.v4-case_back').boundingBox();
+    assert.ok(pill.x < 40 && pill.y < 40, 'top-left');
+    await page.click('.v4-case_back');
+    await caseClosed(page);
+    s = await caseState(page);
+    assert.equal(s.path, '/project');
+    assert.equal(s.panel, 1);
+    assert.equal(s.nav, 1);
+    assert.deepEqual(s.active, ['recto-verso']);
+
+    const r = await frames(page);
+    assert.deepEqual(r.flips, [], 'Barba never ran a transition');
+    assert.equal(await sameDocument(page), true, 'same document, same container');
+    await close();
+  });
+
+  test('"Next project →" and another row swap cases in place; hovering rows does not switch previews', async () => {
+    const { page, close } = await open('/project');
+    await mark(page);
+    const len0 = await page.evaluate(() => history.length);
+    await clickRow(page, 2);
+    await caseOpen(page, 'rio-grande');
+    // Hovering other rows leaves the open preview alone.
+    await page.mouse.move(...(await center(page, 0)));
+    await page.waitForTimeout(500);
     await page.mouse.move(...(await center(page, 1)));
     await page.waitForTimeout(500);
-    await page.mouse.down();
-    await page.mouse.up();
-    await page.waitForURL(`${BASE}/nuform`, { timeout: 5000 });
-    await page.waitForTimeout(500);
-    assert.equal(await page.textContent('#case-title'), 'The Future of You');
-    assert.equal(await page.evaluate(() => window.__pageRevealVT), true, 'the browser crossfaded between documents');
-    await page.screenshot({ path: path.join(SHOTS, 'case-page.png') });
+    let s = await caseState(page);
+    assert.deepEqual(s.active, ['rio-grande'], 'hover does not switch previews while open');
+
+    await page.click('.v4-case_next'); // scrolls the stage to it first, so the list has slid away
+    await caseOpen(page, 'aloud');
+    await page.waitForFunction(() => !document.querySelector('[data-project-stage]').style.position, null, { timeout: 2000 });
+    s = await caseState(page);
+    assert.equal(s.path, '/library-foundation-of-los-angeles');
+    assert.equal(s.title, 'A New Narrative | Thanh Quach');
+    assert.deepEqual(s.active, ['aloud'], 'the preview follows');
+    assert.equal(s.top, 0, 'starts at the top of the next project');
+    assert.equal(s.pos, '', 'with the list back');
+    assert.equal(await page.evaluate(() => history.length), len0 + 1, 'swaps replace the entry');
+
+    await clickRow(page, 1);
+    await caseOpen(page, 'nuform');
+    s = await caseState(page);
+    assert.equal(s.path, '/nuform-v4');
+    assert.deepEqual(s.active, ['nuform']);
+    assert.deepEqual(await page.evaluate(() => [...document.querySelector('.v4-case_body').children].map((k) => k.className)), LFLA_BODY);
+    assert.equal(await page.evaluate(() => history.length), len0 + 1);
+
+    // One Back returns to /project.
+    await page.goBack();
+    await caseClosed(page);
+    s = await caseState(page);
+    assert.equal(s.path, '/project');
+    assert.deepEqual(s.active, ['nuform']);
+    assert.equal(await sameDocument(page), true);
     await close();
   });
 
-  test('touch: the first tap previews, a second tap on the same row opens', async () => {
+  test('a slow page shows a 3 px bar across the top of the stage, then opens; Esc while loading cancels', async () => {
+    const { page, close } = await open('/project');
+    const slow = (re, ms) => page.route(re, async (route) => { await new Promise((r) => setTimeout(r, ms)); await route.continue(); });
+    await slow(/\/rio-grande-rv-resort$/, 800);
+    await clickRow(page, 2); // straight away: the hover intent never got to fetch it
+    await page.waitForTimeout(250);
+    const bar = await page.evaluate(() => {
+      const p = document.querySelector('[data-project-stage] .v4-case_progress');
+      const st = document.querySelector('[data-project-stage]').getBoundingClientRect();
+      if (!p) return null;
+      const r = p.getBoundingClientRect();
+      return { h: r.height, top: r.top - st.top, left: r.left - st.left, scale: new DOMMatrix(getComputedStyle(p).transform).a, path: location.pathname, open: !!document.querySelector('.v4-case') };
+    });
+    assert.ok(bar, 'the bar is there');
+    assert.equal(bar.h, 3);
+    assert.equal(bar.top, 0);
+    assert.equal(bar.left, 0);
+    assert.ok(bar.scale > 0.3 && bar.scale < 1, `filling (${bar.scale})`);
+    assert.equal(bar.path, '/project', 'nothing changes until the page arrives');
+    assert.equal(bar.open, false);
+    assert.deepEqual((await state(page)).active, ['rio-grande'], 'the preview shows at once');
+    await page.screenshot({ path: path.join(SHOTS, 'case-loading.png') });
+    await caseOpen(page, 'rio-grande');
+    assert.equal(new URL(page.url()).pathname, '/rio-grande-rv-resort');
+    await page.waitForTimeout(500);
+    assert.equal(await page.locator('.v4-case_progress').count(), 0, 'the bar is gone');
+
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+    await slow(/\/nuform-v4$/, 800);
+    await clickRow(page, 1);
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(1200);
+    const s = await caseState(page);
+    assert.equal(s.path, '/project', 'cancelled');
+    assert.equal(s.open, null);
+    assert.equal(await page.locator('.v4-case_progress').count(), 0);
+    await close();
+  });
+
+  test('phone: the first tap previews, the second opens it full-screen; the pill and Back close it', async () => {
     const { page, close } = await open('/project', { viewport: PHONE, touch: true });
     // page.tap() waits for the row to stop moving; tap by coordinates like a finger would.
     const tapRow = async (i) => {
       const b = await page.locator('.project-list_row').nth(i).boundingBox();
       await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
     };
+    const stageBefore = await page.evaluate(() => document.querySelector('[data-project-stage]').getBoundingClientRect().toJSON());
     await tapRow(2);
     await page.waitForTimeout(600);
-    const s = await state(page);
-    assert.deepEqual(s.active, ['rio-grande']);
+    assert.deepEqual((await state(page)).active, ['rio-grande']);
     assert.equal(new URL(page.url()).pathname, '/project');
     await page.screenshot({ path: path.join(SHOTS, 'project-phone-preview.png') });
     await tapRow(0);
     await page.waitForTimeout(700);
     assert.deepEqual((await state(page)).active, ['recto-verso'], 'tapping another row previews it');
     assert.equal(new URL(page.url()).pathname, '/project');
+
     await tapRow(0);
-    await page.waitForURL(`${BASE}/project-t---recto-verso`, { timeout: 5000 });
+    await caseOpen(page, 'recto-verso');
+    await page.waitForTimeout(800);
+    let s = await caseState(page);
+    assert.equal(s.path, '/project-t---recto-verso');
+    assert.deepEqual([s.rect.left, s.rect.top, Math.round(s.rect.width), Math.round(s.rect.height)], [0, 0, PHONE.width, PHONE.height], 'full screen');
+    assert.equal(s.panel, 0);
+    assert.equal(s.panelY, 60, 'the list slid down and out');
+    assert.equal(s.pill, 1);
+    await page.screenshot({ path: path.join(SHOTS, 'case-phone.png') });
+    await page.evaluate(() => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = 900; st.dispatchEvent(new Event('scroll')); });
+    await page.waitForTimeout(300);
+    s = await caseState(page);
+    assert.equal(s.top, 900, 'the stage scrolls');
+    assert.equal(s.winY, 0, 'the window does not');
+    assert.equal(s.pos, 'fixed', 'still full screen');
+
+    const pill = await page.locator('.v4-case_back').boundingBox();
+    await page.touchscreen.tap(pill.x + pill.width / 2, pill.y + pill.height / 2);
+    await caseClosed(page);
+    await page.waitForTimeout(300);
+    s = await caseState(page);
+    assert.equal(s.path, '/project');
+    assert.ok(Math.abs(s.rect.top - stageBefore.top) < 1 && Math.abs(s.rect.height - stageBefore.height) < 1, 'the stage is back in its place');
+    assert.equal(s.panel, 1);
+    assert.deepEqual(s.active, ['recto-verso']);
+
+    // The preview is still up, so one tap opens it again; Back closes.
+    await tapRow(0);
+    await caseOpen(page, 'recto-verso');
+    await page.goBack();
+    await caseClosed(page);
+    assert.equal(new URL(page.url()).pathname, '/project');
+    await close();
+  });
+
+  test('a nav link while a case is open closes it and runs the normal glide; Back returns to /project', async () => {
+    const { page, close } = await open('/project');
+    await clickRow(page, 3);
+    await caseOpen(page, 'aloud');
+    // "Project" itself just closes the case.
+    await recordFlips(page);
+    await page.click('.nav_link[href="/project"]');
+    await caseClosed(page);
+    let s = await caseState(page);
+    assert.equal(s.path, '/project');
+    assert.deepEqual((await frames(page)).flips, [], 'no transition');
+
+    await clickRow(page, 3);
+    await caseOpen(page, 'aloud');
+    await page.click('.nav_link[href="/archive"]');
+    await flipDone(page, '/archive');
+    const r = await frames(page);
+    assert.deepEqual(r.flips, ['forward'], 'the normal page transition');
+    assert.deepEqual([...new Set(r.variants)], ['glide']);
+    const a = await page.evaluate(() => ({
+      leftovers: document.querySelectorAll('.v4-case, .v4-case_back, .v4-case_progress, .v4-case_slot').length,
+      lenisStopped: document.documentElement.classList.contains('lenis-stopped'),
+      title: document.title,
+      current: [...document.querySelectorAll('.nav_component a.w--current')].map((x) => x.getAttribute('href')),
+      chrome: [...document.querySelectorAll('.nav_component, .footer_component')].map((el) => el.style.opacity + el.style.visibility),
+    }));
+    assert.equal(a.leftovers, 0);
+    assert.equal(a.lenisStopped, false, "the window's Lenis runs on the Archive");
+    assert.equal(a.title, 'Archive | Thanh Quach');
+    assert.deepEqual(a.current, ['/archive']);
+    assert.deepEqual(a.chrome, ['', ''], 'nav and footer untouched');
+
+    await resetFrames(page);
+    await page.goBack();
+    await flipDone(page, '/project');
+    s = await caseState(page);
+    assert.equal(s.path, '/project', 'Back lands on /project, not the case URL');
+    assert.equal(s.open, null);
+    assert.deepEqual((await frames(page)).flips, ['back']);
+
+    // V4.navigate does the same.
+    await clickRow(page, 2);
+    await caseOpen(page, 'rio-grande');
+    await resetFrames(page);
+    await page.evaluate(() => window.V4.navigate('/'));
+    await flipDone(page, '/');
+    assert.deepEqual((await frames(page)).flips, ['back']);
+    await page.goBack();
+    await flipDone(page, '/project');
+    assert.equal(new URL(page.url()).pathname, '/project');
+    await close();
+  });
+
+  test('a link inside the case to another page leaves normally; a cache restore keeps the case open', async () => {
+    const { page, close } = await open('/project');
+    await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push(href); });
+    await clickRow(page, 3);
+    await caseOpen(page, 'aloud');
+    await page.click('.v4-case .case-link');
+    await page.waitForFunction(() => window.__assigned.length === 1, null, { timeout: 3000 });
+    assert.equal(new URL(await page.evaluate(() => window.__assigned[0])).pathname, '/archives/cactus-light');
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await page.waitForFunction(() => !window.V4.isBusy() && !document.querySelector('[data-barba="wrapper"]').hasAttribute('data-flip'), null, { timeout: 3000 });
+    await page.waitForTimeout(900);
+    const s = await caseState(page);
+    assert.equal(s.path, '/library-foundation-of-los-angeles');
+    assert.equal(s.open, 'open', 'still open');
+    assert.equal(s.windowLenisStopped, true, "the window's Lenis is paused again");
+    await page.keyboard.press('Escape');
+    await caseClosed(page);
+    assert.equal(new URL(page.url()).pathname, '/project');
     await close();
   });
 });
@@ -1003,22 +1375,62 @@ describe('reduced motion', () => {
     await close();
   });
 
-  test('the expand becomes a short fade to the ground', async () => {
-    const { page, close } = await open('/project', RM);
+  test('the Archive expand becomes a short fade to the ground', async () => {
+    const { page, close } = await open('/archive', RM);
     await page.evaluate(() => { window.__assigned = []; window.V4.assign = (href) => window.__assigned.push([href, performance.now()]); });
-    const b = await page.locator('.project-list_row').nth(0).boundingBox();
-    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
-    await page.waitForTimeout(300);
+    await page.click('.archive_item:nth-child(3) .archive_name');
+    await page.waitForTimeout(200);
     const t0 = await page.evaluate(() => performance.now());
-    await page.mouse.down();
-    await page.mouse.up();
+    await page.click('.archive_item:nth-child(3) .archive_name');
     await page.waitForFunction(() => window.__assigned.length === 1, null, { timeout: 3000 });
-    const r = await page.evaluate(() => ({ at: window.__assigned[0][1], position: getComputedStyle(document.querySelector('[data-project-stage]')).position, ground: getComputedStyle(document.querySelector('.v4-ground')).opacity }));
+    const r = await page.evaluate(() => ({ at: window.__assigned[0][1], position: getComputedStyle(document.querySelector('[data-archive="covers"]')).position, ground: getComputedStyle(document.querySelector('.v4-ground')).opacity }));
     assert.ok(r.at - t0 < 450, `quick (${Math.round(r.at - t0)} ms)`);
     assert.notEqual(r.position, 'fixed', 'nothing grows');
     assert.equal(r.ground, '1');
     await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
     await page.waitForFunction(() => getComputedStyle(document.querySelector('.v4-ground')).display === 'none', null, { timeout: 2000 });
+    await close();
+  });
+
+  test('Project opens a case in place with no slide or fade, and closes the same way', async () => {
+    const { page, close } = await open('/project', RM);
+    const b = await page.locator('.project-list_row').nth(3).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.waitForTimeout(300); // fetched on the hover intent
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForSelector('.v4-case', { timeout: 3000 });
+    const now = (fn) => page.evaluate(fn);
+    const opened = await now(() => {
+      const c = document.querySelector('.v4-case');
+      const st = document.querySelector('[data-project-stage]');
+      return { opacity: getComputedStyle(c).opacity, path: location.pathname, stageLenis: st.classList.contains('lenis'), focused: document.activeElement === st };
+    });
+    assert.equal(opened.opacity, '1', 'no fade in');
+    assert.equal(opened.path, '/library-foundation-of-los-angeles');
+    assert.equal(opened.stageLenis, false, 'native scroll in the stage');
+    assert.equal(opened.focused, true, 'focus moves into the case');
+    await page.keyboard.press('PageDown');
+    await page.waitForTimeout(100);
+    assert.ok(await now(() => document.querySelector('[data-project-stage]').scrollTop) > 200, 'the keyboard scrolls the case');
+    await now(() => { const st = document.querySelector('[data-project-stage]'); st.scrollTop = 0; });
+    await page.waitForTimeout(50);
+    // Past 24 px: the list is gone on the same frame.
+    const collapsed = await now(() => new Promise((resolve) => {
+      const st = document.querySelector('[data-project-stage]');
+      st.scrollTop = 100;
+      st.addEventListener('scroll', () => requestAnimationFrame(() => {
+        const r = st.getBoundingClientRect();
+        resolve({ rect: [r.left, r.top, Math.round(r.width), Math.round(r.height)], panel: getComputedStyle(document.querySelector('.project-list_panel')).opacity, pill: getComputedStyle(document.querySelector('.v4-case_back')).opacity });
+      }), { once: true });
+    }));
+    assert.deepEqual(collapsed.rect, [0, 0, 1440, 900]);
+    assert.equal(collapsed.panel, '0');
+    assert.equal(collapsed.pill, '1');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.v4-case'), null, { timeout: 1000 });
+    const closed = await now(() => ({ path: location.pathname, panel: getComputedStyle(document.querySelector('.project-list_panel')).opacity, pos: document.querySelector('[data-project-stage]').style.position, focus: document.activeElement.getAttribute('data-project') }));
+    assert.deepEqual(closed, { path: '/project', panel: '1', pos: '', focus: 'aloud' }, 'focus returns to the row');
     await close();
   });
 
