@@ -1,10 +1,12 @@
 // Project: lineup → hover previews with the slat flip and text roll → back to the lineup.
-// Ported from project-page-mockup-v2.html (its open-in-place and list-hiding parts were dropped:
-// a click flips to the existing project page).
+// Ported from project-page-mockup-v2.html (its open-in-place and list-hiding parts were dropped).
+// Opening a project doesn't use the page transition: the preview stage expands to fill the window and
+// fades to the case study's ground, then the project page loads (see core/expand.js).
 
 import { gsap } from 'gsap';
 import { reduced, bag, bezier } from '../core/env.js';
-import { navigate } from '../core/router.js';
+import { exitWith } from '../core/router.js';
+import { expand, collapse, caseGround, backdropOf } from '../core/expand.js';
 
 const SLATS = 6;
 const SLAT_MS = 560;       // each slat turns in 0.56 s…
@@ -23,6 +25,7 @@ export default function project(container) {
   const rows = [...comp.querySelectorAll('.project-list_row')];
   const list = comp.querySelector('.project-list_list') || comp.querySelector('.project-list_panel');
   const stage = comp.querySelector('[data-project-stage]') || comp;
+  const panel = comp.querySelector('.project-list_panel');
   const lineup = comp.querySelector('[data-project-lineup]');
   const slatsBox = comp.querySelector('[data-project-slats]');
   const previewEls = [...comp.querySelectorAll('.project-preview_item')];
@@ -58,6 +61,7 @@ export default function project(container) {
   let overList = false;
   let lastPointer = '';
   let lastPressAt = -Infinity;
+  let opening = false; // the expand is running: hover and grace stand still
   let slatRun = 0;
   let slatTarget = -1;
 
@@ -289,7 +293,7 @@ export default function project(container) {
 
   // ---------- Input ----------
   function hover(i, how) {
-    if (!alive) return;
+    if (!alive || opening) return;
     clearTimeout(graceTimer);
     if (state === 'lineup') {
       clearTimeout(intentTimer);
@@ -304,17 +308,43 @@ export default function project(container) {
   }
 
   function scheduleGrace() {
+    if (opening) return;
     clearTimeout(graceTimer);
     clearTimeout(intentTimer);
     graceTimer = setTimeout(() => { if (alive && !overList) returnToLineup(false); }, GRACE_MS);
   }
 
+  // The V4 nav and footer belong to this page, not to the case study: they fade with the list.
+  const frameEls = () => [...document.querySelectorAll('.nav_component, .footer_component')];
+
+  // The preview for row i at once: no fade, no roll (a click can land before the hover intent).
+  function showNow(i) {
+    clearTimeout(intentTimer);
+    clearTimeout(graceTimer);
+    state = 'browsing';
+    current = i;
+    mark(i);
+    setLineupHidden(true);
+    killFades();
+    allPreviews().forEach((p) => gsap.set(p, { autoAlpha: p === items[i].preview ? 1 : 0 }));
+    if (lineup) gsap.set(lineup, { autoAlpha: 0 });
+  }
+
+  // Open: the list slides away, the preview stage grows to fill the window so it reads as the opening of
+  // the case study, the page fades to the case-study ground, then the (prefetched) project page loads.
   function open(i) {
     const it = items[i];
-    if (!it || !it.row.getAttribute('href')) return;
-    if (state === 'lineup') leaveLineup(i);
-    else showPreview(i);
-    navigate(it.row.href); // project pages are outside Barba: flip away, then a normal load
+    if (!it || !it.row.getAttribute('href') || opening) return;
+    if (state !== 'browsing' || current !== i) showNow(i);
+    clearTimeout(intentTimer);
+    clearTimeout(graceTimer);
+    prefetch(i);
+    const ground = it.row.getAttribute('data-ground') || caseGround();
+    const fill = backdropOf(stage);
+    opening = exitWith(() => {
+      if (slatsBox) gsap.set(slatsBox, { autoAlpha: 0 }); // the preview's own strip shows the same image
+      return expand(stage, { ground, fill, slide: [panel], fade: frameEls() });
+    }, it.row.href, 'expand');
   }
 
   const isTouchy = (type) => type === 'touch' || type === 'pen';
@@ -384,9 +414,15 @@ export default function project(container) {
       offs.flush();
       if (ro) ro.disconnect();
     },
-    // Back from a project page (back/forward cache): start again on the lineup.
-    restore() {
+    // Back from a project page (back/forward cache): reverse the expand, then return to the lineup.
+    restore(info) {
       overList = false;
+      if (info && info.kind === 'expand' && opening) {
+        opening = false;
+        collapse(stage, { slide: [panel], fade: frameEls() }).then(() => { if (alive) returnToLineup(false); });
+        return;
+      }
+      opening = false;
       returnToLineup(true);
     },
   };

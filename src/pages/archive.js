@@ -5,7 +5,8 @@
 import { gsap } from 'gsap';
 import { Observer } from 'gsap/Observer';
 import { reduced, isMobile, bag, bezier, clamp, luminance, pad } from '../core/env.js';
-import { navigate } from '../core/router.js';
+import { navigate, exitWith } from '../core/router.js';
+import { expand, collapse } from '../core/expand.js';
 
 const K = 320;            // spring stiffness
 const C = 30;             // spring damping
@@ -31,6 +32,8 @@ export default function archive(container) {
   // Webflow outputs loading="lazy" on images by default; every cover must be ready before the dial turns.
   container.querySelectorAll('[data-archive="covers"] img').forEach((img) => { if (img.loading === 'lazy') img.loading = 'eager'; });
   const counter = container.querySelector('[data-archive="counter"]');
+  const coversWrap = container.querySelector('[data-archive="covers"]');
+  const panel = container.querySelector('.archive_panel');
   const pageWrap = document.querySelector('[data-barba="wrapper"]') || document.querySelector('.page-wrapper');
   const offs = bag();
 
@@ -47,6 +50,7 @@ export default function archive(container) {
   let dragStart = 0;
   let pressTarget = -1;
   let suppressClickUntil = 0;
+  let opening = false;
   const MIN_P = -0.55;
   const MAX_P = N - 1 + 0.55;
 
@@ -227,9 +231,20 @@ export default function archive(container) {
     startSpring();
   }
 
+  const frameEls = () => [...document.querySelectorAll('.nav_component, .footer_component')];
+
+  // Open the centered row's page: the cover grows to fill the window, the list slides away, the page fades
+  // to the row's ground (data-ground, else its cover colour), then the entry page loads.
   function open(i) {
     const a = rows[i] && rows[i].querySelector('a[href]');
-    if (a) navigate(a.href); // rows without a page never open
+    if (!a || opening) return; // rows without a page never open
+    if (!coversWrap) { navigate(a.href); return; }
+    const ground = rows[i].getAttribute('data-ground') || rows[i].getAttribute('data-color') || '#ffffff';
+    opening = exitWith(() => {
+      observer.disable();
+      stopSpring();
+      return expand(coversWrap, { ground, slide: [panel], fade: [counter, ...frameEls()] });
+    }, a.href, 'expand');
   }
 
   // ---------- Input: GSAP Observer for wheel, trackpad, touch and drag ----------
@@ -302,6 +317,7 @@ export default function archive(container) {
     const row = e.target && e.target.closest ? e.target.closest('[data-archive="row"]') : null;
     if (!row) return;
     e.preventDefault();
+    if (opening) return;
     if (performance.now() < suppressClickUntil) return; // the click that ends a drag
     const i = rows.indexOf(row);
     const was = e.detail === 0 ? Math.round(target) : pressTarget; // keyboard: the row that is centered now
@@ -356,9 +372,15 @@ export default function archive(container) {
       offs.flush();
       if (ro) ro.disconnect();
     },
-    restore() {
-      measure();
-      render();
+    restore(info) {
+      const settle = () => { observer.enable(); measure(); render(); };
+      if (info && info.kind === 'expand' && opening) {
+        opening = false;
+        collapse(coversWrap, { slide: [panel], fade: [counter, ...frameEls()] }).then(settle);
+      } else {
+        opening = false;
+        settle();
+      }
       const color = rows[sel] && rows[sel].getAttribute('data-color');
       if (color && pageWrap) pageWrap.setAttribute('data-ink', luminance(color) > 0.42 ? 'dark' : 'light');
     },
