@@ -4,12 +4,17 @@
 
 @import "lenis/dist/lenis.css";
 
-/* ---------- Root sizing: the 1560 px frames scale with the window on desktop, held at 1920 ---------- */
+/* ---------- Fluid type (Finsweet's fluid-responsive method: linear in vw between breakpoints) ----------
+   Anchors: the 1560x990 desktop frame = 16px, the 402px mobile frame = 16px. Never above 16px.
+   Desktop also never lets the one-screen layout grow taller than the window (990 / 16 = 61.875rem). */
 @media (min-width: 992px) {
-  html { font-size: calc(100vw / 97.5); }
+  html { font-size: min(calc(100vw / 97.5), calc(100vh / 61.875), 16px); }
 }
-@media (min-width: 1920px) {
-  html { font-size: calc(1920px / 97.5); }
+@media (min-width: 768px) and (max-width: 991px) {
+  html { font-size: calc(10px + 0.4vw); }
+}
+@media (max-width: 767px) {
+  html { font-size: clamp(13px, calc(100vw / 25.125), 16px); }
 }
 
 /* The site-wide body tag style is width 100vw / height 5vh; undo it on these three pages. */
