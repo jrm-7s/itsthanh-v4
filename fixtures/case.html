@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!-- Fixture: a page outside Barba (project and archive entry pages stay as they are, with no v4.js). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Case study | Thanh Quach</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+body { margin: 0; font: 400 18px/1.5 Georgia, serif; color: #24222b; background: #f7f5f0; }
+main { max-width: 760px; margin: 0 auto; padding: 96px 24px; }
+h1 { font-size: 44px; margin: 0 0 24px; }
+.hero { height: 420px; border-radius: 6px; background: linear-gradient(135deg, #4a3fb0, #b45f80); }
+a { color: #4a3fb0; }
+</style>
+</head>
+<body>
+<main>
+  <p><a href="/project" id="back-to-projects">All projects</a> · <a href="/archive">Archive</a></p>
+  <h1 id="case-title">Case study</h1>
+  <div class="hero"></div>
+  <p>This stands in for an existing project page. It is not part of the V4 redesign and loads normally.</p>
+</main>
+<script>document.getElementById('case-title').textContent = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || 'Case study').replace(/-+/g, ' ');</script>
+</body>
+</html>
